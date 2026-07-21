@@ -1,0 +1,45 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Legacy training project
+legacy/aeollm2_train_code/
+
+# Large datasets
+data/raw/reports/
+data/processed/
+data/official
+data/incoming
+
+# Model and Hugging Face cache
+models/
+hf-cache/
+.cache/
+
+# Experiment outputs and logs
+outputs/
+logs/
+
+# Temporary files
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+
+# VS Code local state
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
