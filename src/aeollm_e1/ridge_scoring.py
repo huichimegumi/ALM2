@@ -110,6 +110,28 @@ def _select_alpha(
     return best_alpha, best_mae
 
 
+def fit_grouped_ridge_fold(
+    x_train: pd.DataFrame,
+    x_test: pd.DataFrame,
+    y_train: np.ndarray,
+    groups: np.ndarray,
+    *,
+    alphas: Sequence[float] = RIDGE_ALPHAS,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """Fit one leakage-safe outer-fold Ridge model and return train/test predictions."""
+    if not alphas or any(float(alpha) <= 0 for alpha in alphas):
+        raise ValueError("all Ridge alphas must be positive")
+    y_train = np.asarray(y_train, dtype=float)
+    groups = np.asarray(groups)
+    if len(x_train) != len(y_train) or len(groups) != len(y_train):
+        raise ValueError("training features, targets, and groups must have equal length")
+    alpha, inner_mae = _select_alpha(x_train, y_train, groups, alphas)
+    model = _ridge_pipeline(alpha).fit(x_train, y_train)
+    train_prediction = np.clip(np.asarray(model.predict(x_train), dtype=float), 0.0, 10.0)
+    test_prediction = np.clip(np.asarray(model.predict(x_test), dtype=float), 0.0, 10.0)
+    return train_prediction, test_prediction, alpha, inner_mae
+
+
 def nested_loqo_ridge_predictions(
     frame: pd.DataFrame,
     labels: pd.DataFrame,
