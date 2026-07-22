@@ -20,6 +20,12 @@ def test_dimension_feature_mapping_uses_only_its_own_rubric() -> None:
     assert mapping["insight"]["rubric"] == ["rubric_insight_score"]
     assert "rubric_readability_score" not in mapping["insight"]["all"]
     assert mapping["insight"]["all"] == ["global_0", "global_1", "rubric_insight_score", "length"]
+    assert mapping["insight"]["global_structure"] == ["global_0", "global_1", "length"]
+    assert mapping["insight"]["global_rubric"] == [
+        "global_0",
+        "global_1",
+        "rubric_insight_score",
+    ]
     assert own_dimension_rubric_columns(groups, "readability") == ["rubric_readability_score"]
 
 

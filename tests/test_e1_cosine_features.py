@@ -79,3 +79,40 @@ def test_existing_outputs_require_explicit_overwrite(tmp_path: Path) -> None:
     build_cosine_features(cache, output)
     with pytest.raises(FileExistsError):
         build_cosine_features(cache, output)
+
+
+def test_alternate_criterion_cache_changes_only_rubric_features(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    make_cache(cache)
+    variant = tmp_path / "variant"
+    variant.mkdir()
+    alternate = _unit([[0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1]])
+    np.save(variant / "criterion_embeddings.npy", alternate)
+    (variant / "criterion_index.jsonl").write_text(
+        (cache / "criterion_index.jsonl").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (variant / "variant_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "truncated_inputs": 0,
+                "model_name": "fake",
+                "variant": "test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    matched_output = tmp_path / "matched"
+    variant_output = tmp_path / "controlled"
+    build_cosine_features(cache, matched_output)
+    manifest = build_cosine_features(cache, variant_output, criterion_cache_dir=variant)
+    matched = pd.read_csv(matched_output / "document_features.csv")
+    controlled = pd.read_csv(variant_output / "document_features.csv")
+    assert np.allclose(
+        matched[manifest["feature_groups"]["global"]],
+        controlled[manifest["feature_groups"]["global"]],
+    )
+    assert not np.allclose(
+        matched[manifest["feature_groups"]["rubric_primary"]],
+        controlled[manifest["feature_groups"]["rubric_primary"]],
+    )

@@ -90,6 +90,35 @@ def load_cache(directory: Path) -> CacheBundle:
     return CacheBundle(directory, manifest, chunks, criteria, chunk_index, criterion_index)
 
 
+def load_cache_with_variant(directory: Path, criterion_cache_dir: Path | None) -> CacheBundle:
+    cache = load_cache(directory)
+    if criterion_cache_dir is None:
+        return cache
+    manifest = json.loads(
+        (criterion_cache_dir / "variant_manifest.json").read_text(encoding="utf-8")
+    )
+    if manifest.get("status") != "complete" or int(manifest.get("truncated_inputs", -1)) != 0:
+        raise ValueError(f"criterion variant cache is incomplete: {criterion_cache_dir}")
+    criteria = np.load(criterion_cache_dir / "criterion_embeddings.npy", mmap_mode="r")
+    criterion_index = _read_jsonl(criterion_cache_dir / "criterion_index.jsonl")
+    _check_rows(criterion_index, len(criteria), "criterion variant")
+    _check_normalized(criteria, "criterion variant")
+    if criteria.shape[1] != cache.chunk_embeddings.shape[1]:
+        raise ValueError("criterion variant and chunk embedding dimensions differ")
+    if manifest.get("model_name") != cache.manifest.get("model_name"):
+        raise ValueError("criterion variant and chunk cache use different models")
+    if criterion_index.duplicated(["question_id", "dimension", "criterion_index"]).any():
+        raise ValueError("duplicate criterion variant keys")
+    return CacheBundle(
+        cache.directory,
+        {**cache.manifest, "criterion_variant_manifest": manifest},
+        cache.chunk_embeddings,
+        criteria,
+        cache.chunk_index,
+        criterion_index,
+    )
+
+
 def _top_fraction_mean(values: np.ndarray, fraction: float) -> float:
     count = max(1, math.ceil(len(values) * fraction))
     return float(np.mean(np.partition(values, len(values) - count)[-count:]))
@@ -163,9 +192,11 @@ def build_cosine_features(
     cache_dir: Path,
     output_dir: Path,
     *,
+    criterion_cache_dir: Path | None = None,
+    rubric_question_map: dict[int, int] | None = None,
     overwrite: bool = False,
 ) -> dict[str, object]:
-    cache = load_cache(cache_dir)
+    cache = load_cache_with_variant(cache_dir, criterion_cache_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     document_path = output_dir / "document_features.csv"
     criterion_path = output_dir / "criterion_chunk_features.csv"
@@ -178,6 +209,15 @@ def build_cosine_features(
         int(question_id): group.sort_values("embedding_row").reset_index(drop=True)
         for question_id, group in cache.criterion_index.groupby("question_id", sort=True)
     }
+    available_questions = set(criterion_by_question)
+    document_questions = {int(value) for value in cache.chunk_index["question_id"].unique()}
+    if rubric_question_map is None:
+        rubric_question_map = {question_id: question_id for question_id in document_questions}
+    if set(rubric_question_map) != document_questions:
+        raise ValueError("rubric_question_map must define every document question exactly once")
+    unknown_sources = set(rubric_question_map.values()) - available_questions
+    if unknown_sources:
+        raise ValueError(f"rubric_question_map references unknown questions: {sorted(unknown_sources)}")
     criterion_rows: list[dict[str, object]] = []
     document_rows: list[dict[str, object]] = []
     global_columns = [f"global_{index:04d}" for index in range(cache.chunk_embeddings.shape[1])]
@@ -193,9 +233,10 @@ def build_cosine_features(
         chunk_weights = np.maximum(chunk_weights, 1.0)
         global_embedding = _normalized_centroid(chunk_matrix, chunk_weights)
 
-        criteria = criterion_by_question.get(question_id)
+        rubric_question_id = int(rubric_question_map[question_id])
+        criteria = criterion_by_question.get(rubric_question_id)
         if criteria is None or criteria.empty:
-            raise ValueError(f"no criteria for question {question_id}")
+            raise ValueError(f"no criteria for source rubric question {rubric_question_id}")
         criterion_embedding_rows = criteria["embedding_row"].to_numpy(dtype=int)
         criterion_matrix = np.asarray(
             cache.criterion_embeddings[criterion_embedding_rows], dtype=np.float32
@@ -226,6 +267,7 @@ def build_cosine_features(
                 {
                     "questionId": question_id,
                     "answerId": document_id,
+                    "rubric_question_id": rubric_question_id,
                     "dimension": str(criterion["dimension"]),
                     "criterion_index": int(criterion["criterion_index"]),
                     "criterion": str(criterion["criterion"]),
@@ -302,6 +344,13 @@ def build_cosine_features(
     manifest: dict[str, object] = {
         "status": "complete",
         "source_cache": str(cache_dir.resolve()),
+        "criterion_cache": (
+            str(criterion_cache_dir.resolve()) if criterion_cache_dir is not None else None
+        ),
+        "rubric_question_map": {
+            str(question_id): int(source_question)
+            for question_id, source_question in sorted(rubric_question_map.items())
+        },
         "source_embedding_manifest": cache.manifest,
         "documents": int(len(document_features)),
         "questions": int(document_features["questionId"].nunique()),

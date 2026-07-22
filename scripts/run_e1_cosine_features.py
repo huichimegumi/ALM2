@@ -15,13 +15,19 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build CPU-only E1.3 cosine interaction features")
     parser.add_argument("--cache-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--criterion-cache-dir", type=Path, default=None)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    manifest = build_cosine_features(args.cache_dir, args.output_dir, overwrite=args.overwrite)
+    manifest = build_cosine_features(
+        args.cache_dir,
+        args.output_dir,
+        criterion_cache_dir=args.criterion_cache_dir,
+        overwrite=args.overwrite,
+    )
     summary = {
         key: manifest[key]
         for key in (

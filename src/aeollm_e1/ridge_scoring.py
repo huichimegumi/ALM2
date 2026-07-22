@@ -67,6 +67,8 @@ def build_model_feature_columns(
             "global": global_columns,
             "rubric": rubric,
             "structure": surface,
+            "global_structure": [*global_columns, *surface],
+            "global_rubric": [*global_columns, *rubric],
             "rubric_structure": [*rubric, *surface],
             "all": [*global_columns, *rubric, *surface],
         }
