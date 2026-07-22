@@ -50,3 +50,43 @@ Outputs are written to `outputs/e1/`:
 
 This stage is CPU-only. E1.2 must recheck GPU availability immediately before
 embedding generation and bind only an idle device.
+
+## Next stage: E1.2 frozen encoder
+
+E1.2 uses `Qwen/Qwen3-Embedding-0.6B` as the first controlled encoder. Each
+criterion query contains the original task, criterion name, and explanation.
+All four dimensions share one neutral English retrieval instruction; report
+chunks are encoded without an instruction. The encoder is put in evaluation
+mode, all parameters are frozen, and only normalized vectors are cached.
+
+The cache separates immutable arrays from auditable JSONL indices:
+
+```text
+outputs/e1/embeddings/qwen3-0.6b/
+├── chunk_embeddings.npy
+├── criterion_embeddings.npy
+├── chunk_index.jsonl
+├── criterion_index.jsonl
+└── embedding_manifest.json
+```
+
+On the tyan server, inspect GPU state first, choose an idle card, and pass its
+index explicitly. The script performs a second `nvidia-smi` check immediately
+before allocating the model and refuses a busy card. Bare `cuda` is rejected.
+
+```bash
+nvidia-smi
+.venv-system-python-backup/bin/python scripts/run_e1_embedding.py \
+  --device cuda:ID \
+  --batch-size 8
+```
+
+Inputs longer than `--max-length` cause a hard error instead of silent
+truncation. The 4096-token default accommodates the observed maximum of 3557
+Qwen tokens in the capped training chunks; E1.1's simple multilingual token
+counter and the Qwen tokenizer are not equivalent. Increase it only if the
+preflight reports an offending chunk or criterion. The resulting manifest pins the resolved model
+revision, source JSONL hash, token-length maxima, device, and GPU idle-check
+observation. E1.3 should consume this cache without loading the encoder again.
+The complete two-cache protocol and acceptance checks are in
+[`E1_EMBEDDING.md`](E1_EMBEDDING.md).
