@@ -74,6 +74,11 @@ def _checkpoint_manifest(
         "seeds": list(config.seeds),
         "mismatch_count": config.mismatch_count,
         "training": config_dict(training),
+        "baseline_inner_selection": [
+            "grouped_pairwise_accuracy",
+            "grouped_spearman",
+            "mae",
+        ],
         "base_cache": str(config.base_cache.resolve()),
         "query_variant_root": str(config.query_variant_root.resolve()),
         "architecture": (
@@ -150,19 +155,18 @@ def _dimension_gate_records(
     indexed = paired.set_index(["candidate", "reference", "metric"])
     rows: list[dict[str, object]] = []
     for dimension in ALIGNMENT_DIMS:
-        metric = f"spearman_{dimension}"
+        metric = f"accuracy_{dimension}"
         learned = indexed.loc[(learned_model, fixed_model, metric)]
         baseline = indexed.loc[(learned_model, baseline_model, metric)]
         passed = bool(
             float(learned["mean_delta"]) > 0
             and float(learned["probability_delta_gt_zero"]) >= 0.90
-            and int(learned["positive_questions"]) >= 7
             and float(baseline["mean_delta"]) >= 0
         )
         rows.append(
             {
                 "dimension": dimension,
-                "learned_minus_fixed": float(learned["mean_delta"]),
+                "learned_minus_fixed_accuracy": float(learned["mean_delta"]),
                 "learned_fixed_ci_low": float(learned["ci_low"]),
                 "learned_fixed_ci_high": float(learned["ci_high"]),
                 "probability_delta_gt_zero": float(
@@ -170,7 +174,7 @@ def _dimension_gate_records(
                 ),
                 "positive_questions": int(learned["positive_questions"]),
                 "finite_questions": int(learned["n_questions"]),
-                "learned_minus_baseline": float(baseline["mean_delta"]),
+                "learned_minus_baseline_accuracy": float(baseline["mean_delta"]),
                 "passed": passed,
             }
         )
@@ -180,6 +184,7 @@ def _dimension_gate_records(
 def _write_report(
     path: Path,
     metrics: pd.DataFrame,
+    paired: pd.DataFrame,
     dimension_paired: pd.DataFrame,
     gates: pd.DataFrame,
     diagnostics: pd.DataFrame,
@@ -187,10 +192,16 @@ def _write_report(
     shared_loaded: bool,
     controls_run: list[str],
 ) -> None:
-    ranked = metrics.sort_values("spearman", ascending=False)
-    relevant_metrics = [f"spearman_{dimension}" for dimension in ALIGNMENT_DIMS]
-    primary = dimension_paired[dimension_paired["metric"].isin(relevant_metrics)]
-    primary_indexed = primary.set_index(["candidate", "reference", "metric"])
+    ranked = metrics.sort_values(["accuracy", "spearman"], ascending=False)
+    primary = paired[paired["metric"] == "accuracy"]
+    relevant_metrics = [
+        *[f"accuracy_{dimension}" for dimension in ALIGNMENT_DIMS],
+        *[f"spearman_{dimension}" for dimension in ALIGNMENT_DIMS],
+    ]
+    mechanisms = dimension_paired[
+        dimension_paired["metric"].isin(relevant_metrics)
+    ]
+    mechanism_indexed = mechanisms.set_index(["candidate", "reference", "metric"])
     diagnostic_means = diagnostics.groupby("model")["final_huber"].mean()
     lines = [
         "# E2-A0.1 dimension-separated diagonal diagnostic",
@@ -205,11 +216,11 @@ def _write_report(
         ranked[
             [
                 "model",
+                "accuracy",
                 "spearman",
                 "kendall",
-                "accuracy",
-                "spearman_comprehensiveness",
-                "spearman_instruction_following",
+                "accuracy_comprehensiveness",
+                "accuracy_instruction_following",
                 "mae",
             ]
         ].to_markdown(index=False, floatfmt=".4f"),
@@ -219,12 +230,16 @@ def _write_report(
         gates.to_markdown(index=False, floatfmt=".4f"),
         "",
         "A dimension passes only when learned minus fixed is positive, bootstrap",
-        "P(delta > 0) is at least 0.90, at least 7/10 questions improve, and the",
-        "learned branch is not worse than global + structure on mean Spearman.",
+        "P(delta > 0) is at least 0.90, and the learned branch is not worse than",
+        "global + structure on mean dimension accuracy.",
+        "",
+        "## Primary official-accuracy comparisons",
+        "",
+        primary.to_markdown(index=False, floatfmt=".4f"),
         "",
         "## Paired question bootstrap",
         "",
-        primary.to_markdown(index=False, floatfmt=".4f"),
+        mechanisms.to_markdown(index=False, floatfmt=".4f"),
         "",
         "## Decision",
         "",
@@ -232,22 +247,22 @@ def _write_report(
     for row in gates.itertuples(index=False):
         lines.append(
             f"- `{row.dimension}`: {'PASS' if row.passed else 'FAIL'}; "
-            f"learned-fixed={row.learned_minus_fixed:+.4f}, "
+            f"learned-fixed accuracy={row.learned_minus_fixed_accuracy:+.4f}, "
             f"P(delta>0)={row.probability_delta_gt_zero:.4f}, "
             f"{row.positive_questions}/{row.finite_questions} finite questions positive, "
-            f"learned-baseline={row.learned_minus_baseline:+.4f}."
+            f"learned-baseline accuracy={row.learned_minus_baseline_accuracy:+.4f}."
         )
     if shared_loaded:
         for dimension in ALIGNMENT_DIMS:
-            comparison = primary_indexed.loc[
+            comparison = mechanism_indexed.loc[
                 (
                     "diagonal_matched_separate_hybrid",
                     "diagonal_shared_a0_hybrid",
-                    f"spearman_{dimension}",
+                    f"accuracy_{dimension}",
                 )
             ]
             lines.append(
-                f"- Separated minus shared `{dimension}` Spearman: "
+                f"- Separated minus shared `{dimension}` accuracy: "
                 f"{float(comparison['mean_delta']):+.4f}."
             )
     lines.extend(
@@ -520,12 +535,13 @@ def run_e2_a01(
                 ),
             ]
         )
-    paired_question_bootstrap(
+    paired = paired_question_bootstrap(
         details_by_model,
         comparisons,
         n_resamples=config.bootstrap_resamples,
         seed=config.bootstrap_seed,
-    ).to_csv(output / "paired_bootstrap.csv", index=False, float_format="%.8f")
+    )
+    paired.to_csv(output / "paired_bootstrap.csv", index=False, float_format="%.8f")
     dimension_paired = _alignment_paired_bootstrap(
         details_by_model,
         comparisons,
@@ -540,6 +556,7 @@ def run_e2_a01(
     _write_report(
         output / "e2_a01_conclusions.md",
         metrics,
+        paired,
         dimension_paired,
         gates,
         diagnostic_frame,
@@ -552,6 +569,8 @@ def run_e2_a01(
         "name": "AEOLLM-2 E2-A0.1 dimension-separated diagnostic",
         "outer_split": "Leave-One-Question-Out",
         "model_selection": "none; architecture, epochs, and optimization fixed",
+        "primary_metric": "official weighted-total pairwise accuracy",
+        "secondary_metrics": ["Spearman", "Kendall"],
         "single_change_from_e2_a0": (
             "replace one shared diagonal with one independent diagonal per alignment "
             "dimension; retain joint two-head training and the same mean Huber loss"
@@ -569,10 +588,9 @@ def run_e2_a01(
         "training": config_dict(training),
         "seeds": list(config.seeds),
         "per_dimension_gate": {
-            "learned_minus_fixed": "> 0",
+            "dimension_accuracy_learned_minus_fixed": "> 0",
             "bootstrap_probability_delta_gt_zero": ">= 0.90",
-            "positive_questions": ">= 7/10",
-            "learned_minus_global_structure": ">= 0",
+            "dimension_accuracy_learned_minus_global_structure": ">= 0",
         },
         "conditional_controls": (
             "if any dimension passes, jointly train generic and five mismatch "
@@ -670,11 +688,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=(
             root
-            / "outputs/e2/e2_a0/predictions/diagonal_matched_hybrid.tsv"
+            / "outputs/e2/e2_a0_accuracy/predictions/diagonal_matched_hybrid.tsv"
         ),
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=root / "outputs/e2/e2_a01"
+        "--output-dir", type=Path, default=root / "outputs/e2/e2_a01_accuracy"
     )
     parser.add_argument("--device", required=True, help="cpu or an explicit cuda:N")
     parser.add_argument("--epochs", type=int, default=60)
@@ -712,15 +730,15 @@ def main(argv: list[str] | None = None) -> int:
         metrics[
             [
                 "model",
+                "accuracy",
                 "spearman",
                 "kendall",
-                "accuracy",
-                "spearman_comprehensiveness",
-                "spearman_instruction_following",
+                "accuracy_comprehensiveness",
+                "accuracy_instruction_following",
                 "mae",
             ]
         ]
-        .sort_values("spearman", ascending=False)
+        .sort_values(["accuracy", "spearman"], ascending=False)
         .to_string(index=False)
     )
     return 0

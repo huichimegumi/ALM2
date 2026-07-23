@@ -9,12 +9,14 @@ remain deferred so this experiment isolates the value of the representation.
 
 - Outer split: leave one complete question out.
 - Inner selection: up to five GroupKFold splits over the remaining questions.
-- Selection metric: mean absolute error.
+- Selection objective: pooled within-question pairwise accuracy, then macro
+  Spearman, then mean absolute error.
 - Alpha grid: `0.01, 0.1, 1, 10, 100, 1000`.
 - Four independent scoring heads, one per AEOLLM-2 dimension.
 - Predictions are clipped to the official 0--10 range.
 - Scaling, imputation, alpha selection, and fitting occur inside the outer fold.
-- Bootstrap uncertainty resamples the 10 questions, never document pairs.
+- Official weighted-total pairwise accuracy is primary. Bootstrap uncertainty
+  resamples the 10 questions and recomputes pooled correct/total pairs.
 
 For the primary rubric models, each scoring head sees only its own dimension's
 criterion-conditioned features. Criterion count, raw chunk count, and fixed
@@ -32,7 +34,8 @@ top-3/top-5 diagnostics are excluded.
 ## Run
 
 ```bash
-.venv-system-python-backup/bin/python scripts/run_e1_ridge.py
+.venv-system-python-backup/bin/python scripts/run_e1_ridge.py \
+  --output-dir outputs/e1/e1_4_accuracy
 ```
 
 This stage is CPU-only. Outputs are written under `outputs/e1/e1_4/`, including

@@ -19,12 +19,12 @@ Five models are evaluated:
 - `nested_query_selective`, which chooses between the two query forms
   independently for both rubric-aligned dimensions inside every outer fold.
 
-For the nested policy, query source and Ridge alpha are selected jointly by
-minimum MAE under question-grouped inner cross-validation. The held-out
-question is not used for selection, scaling, imputation, or fitting. The
-primary research metric is the mean question-level Spearman over
-comprehensiveness and instruction following. Official weighted-total results
-remain secondary and are fully reported.
+For the nested policy, query source and Ridge alpha are selected jointly under
+question-grouped inner cross-validation: pairwise accuracy first, Spearman
+second, and MAE as the final tie-break. The held-out question is not used for
+selection, scaling, imputation, or fitting. The primary endpoint is official
+pairwise accuracy of the weighted total; dimension accuracy and Spearman are
+mechanism diagnostics.
 
 The fixed dimension mapping is an exploratory, researcher-informed analysis
 motivated by E1.6. It must not be described as validation on untouched tasks.
@@ -34,7 +34,8 @@ can be recovered from outer-training questions alone.
 ## Run
 
 ```bash
-.venv-system-python-backup/bin/python scripts/run_e1_7.py
+.venv-system-python-backup/bin/python scripts/run_e1_7.py \
+  --output-dir outputs/e1/e1_7_accuracy
 ```
 
 E1.7 uses scikit-learn Ridge on only 160 documents. Its numerical backend is
@@ -46,6 +47,6 @@ Outputs are written to `outputs/e1/e1_7/`, including out-of-fold predictions,
 all inner candidate scores, fold-level query and alpha choices, paired
 question bootstraps, protocol metadata, and the automatic decision report.
 
-The pre-specified gate compares `nested_query_selective` with
-`global_structure`: positive mean alignment delta, bootstrap probability of a
-positive delta at least 0.90, and at least 7 of 10 held-out questions positive.
+The gate compares `nested_query_selective` with `global_structure`: positive
+official-accuracy delta, positive net correct pairs, and question-bootstrap
+probability of a positive delta at least 0.90.

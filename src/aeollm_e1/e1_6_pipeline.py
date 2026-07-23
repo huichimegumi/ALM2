@@ -123,6 +123,12 @@ def _alignment_paired_bootstrap(
     rng = np.random.default_rng(seed)
     rows: list[dict[str, object]] = []
     metric_columns = {
+        "alignment_accuracy": (
+            "accuracy_comprehensiveness",
+            "accuracy_instruction_following",
+        ),
+        "accuracy_comprehensiveness": ("accuracy_comprehensiveness",),
+        "accuracy_instruction_following": ("accuracy_instruction_following",),
         "alignment_spearman": (
             "spearman_comprehensiveness",
             "spearman_instruction_following",
@@ -182,18 +188,33 @@ def _mean_predictions(predictions: list[pd.DataFrame]) -> pd.DataFrame:
 def _write_report(
     path: Path,
     metrics: pd.DataFrame,
+    paired: pd.DataFrame,
     alignment_paired: pd.DataFrame,
 ) -> None:
-    ranked = metrics.sort_values("spearman", ascending=False)
+    ranked = metrics.sort_values(["accuracy", "spearman"], ascending=False)
     indexed = metrics.set_index("model")
-    align = alignment_paired[alignment_paired["metric"] == "alignment_spearman"]
-    align_indexed = align.set_index(["candidate", "reference"])
-    incremental = align_indexed.loc[("matched_full_all", "matched_full_global_structure")]
-    mismatch = align_indexed.loc[("matched_full_rubric", "mismatched_ensemble_rubric")]
-    generic = align_indexed.loc[("matched_full_rubric", "generic_dimension_rubric")]
-    total_delta = float(indexed.loc["matched_full_all", "spearman"]) - float(
-        indexed.loc["matched_full_global_structure", "spearman"]
+    primary = paired[paired["metric"] == "accuracy"]
+    primary_indexed = primary.set_index(["candidate", "reference"])
+    align = alignment_paired[
+        alignment_paired["metric"].isin(
+            ["alignment_accuracy", "alignment_spearman"]
+        )
+    ]
+    incremental = primary_indexed.loc[
+        ("matched_full_all", "matched_full_global_structure")
+    ]
+    mismatch = primary_indexed.loc[
+        ("matched_full_rubric", "mismatched_ensemble_rubric")
+    ]
+    generic = primary_indexed.loc[
+        ("matched_full_rubric", "generic_dimension_rubric")
+    ]
+    criterion = float(indexed.loc["criterion_only_all", "accuracy"]) - float(
+        indexed.loc["matched_full_global_structure", "accuracy"]
     )
+    criterion_paired = primary_indexed.loc[
+        ("criterion_only_all", "matched_full_global_structure")
+    ]
     lines = [
         "# E1.6 rubric attribution controls",
         "",
@@ -206,44 +227,48 @@ def _write_report(
         ranked[
             [
                 "model",
+                "accuracy",
                 "spearman",
                 "kendall",
-                "accuracy",
-                "spearman_comprehensiveness",
-                "spearman_instruction_following",
+                "accuracy_comprehensiveness",
+                "accuracy_instruction_following",
                 "mae",
             ]
         ].to_markdown(index=False, floatfmt=".4f"),
         "",
-        "## Pre-registered alignment comparisons",
+        "## Primary official-accuracy comparisons",
+        "",
+        primary.to_markdown(index=False, floatfmt=".4f"),
+        "",
+        "## Dimension-mechanism diagnostics",
         "",
         align.to_markdown(index=False, floatfmt=".4f") if len(align) else "No comparisons.",
         "",
         "## Decision",
         "",
-        f"- Matched rubric adds {float(incremental['mean_delta']):+.4f} alignment Spearman over",
-        "  `global+structure` "
+        f"- Matched full features add {float(incremental['mean_delta']):+.4f} official",
+        "  pairwise accuracy over `global+structure` "
         f"(95% question-bootstrap CI [{float(incremental['ci_low']):.4f}, "
         f"{float(incremental['ci_high']):.4f}]; "
-        f"{int(incremental['positive_questions'])}/10 questions positive).",
-        f"- The corresponding official weighted-total Spearman delta is {total_delta:+.4f};",
-        "  rubric gains on comprehensiveness and instruction following are offset by the",
-        "  dimensions for which criterion retrieval is not the appropriate inductive bias.",
+        f"{int(incremental['net_correct_pairs'])} net correct pairs).",
+        f"- `criterion_only_all` adds {criterion:+.4f} accuracy over global+structure",
+        f"  ({int(criterion_paired['net_correct_pairs'])} net correct pairs; "
+        f"P(delta>0)={float(criterion_paired['probability_delta_gt_zero']):.4f}) and is",
+        "  the E1.6 accuracy leader; full prompt context is not uniformly useful.",
         f"- Matched rubric beats the mismatched ensemble by {float(mismatch['mean_delta']):+.4f}",
-        f"  alignment Spearman and generic dimensions by {float(generic['mean_delta']):+.4f}.",
-        "- `criterion_only_all` has the best official total, while the full query is stronger",
-        "  than criterion-only for instruction following. Prompt context is therefore useful",
-        "  selectively rather than uniformly across all four heads.",
-        "- E1.6 supports proceeding to the minimal E2-A0 learned interaction, focused on",
-        "  comprehensiveness and instruction following. It does not support feeding the same",
-        "  rubric branch indiscriminately to all four output heads.",
+        f"  accuracy and generic dimensions by {float(generic['mean_delta']):+.4f}.",
+        "- Dimension accuracy and Spearman remain mechanism diagnostics; they do not",
+        "  replace the official accuracy of the weighted total.",
+        "- E1.6 supports selective fixed-representation rubric routing. Whether to train",
+        "  a learned interaction is a separate supervision and generalization question.",
         "",
         "## Interpretation rules",
         "",
         "- `matched_full_all > matched_full_global_structure` tests incremental rubric value.",
         "- Matched versus generic or mismatched tests criterion-specific conditioning.",
-        "- `alignment_spearman` is the mean of comprehensiveness and instruction-following",
-        "  Spearman within each question, followed by a question-level macro average.",
+        "- Official accuracy is total correct weighted-score pairs divided by total pairs.",
+        "- Spearman diagnoses large rank displacement; Kendall is mainly an accuracy",
+        "  consistency check when weighted totals have no ties.",
         "- `mismatched_ensemble_*` averages predictions from five independently retrained",
         "  mismatch controls and is therefore a conservative negative control.",
         "- The held-out question is never used for scaling, alpha selection, or fitting.",
@@ -258,6 +283,24 @@ def run_e1_6(config: E16Config) -> pd.DataFrame:
     output.mkdir(parents=True, exist_ok=True)
     prediction_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    selection_marker = checkpoint_dir / "selection_objective.json"
+    selection_protocol = {
+        "primary": "grouped_pairwise_accuracy",
+        "tie_breaks": ["grouped_spearman", "mae", "declared_candidate_order"],
+    }
+    if any(checkpoint_dir.glob("*.csv")) and not selection_marker.exists():
+        raise ValueError(
+            "existing E1.6 checkpoints use the historical selection protocol; "
+            "run the accuracy-first protocol with a new --output-dir"
+        )
+    if selection_marker.exists():
+        observed = json.loads(selection_marker.read_text(encoding="utf-8"))
+        if observed != selection_protocol:
+            raise ValueError("E1.6 checkpoint selection protocol does not match")
+    else:
+        selection_marker.write_text(
+            json.dumps(selection_protocol, indent=2) + "\n", encoding="utf-8"
+        )
     labels = normalize_labels(pd.read_csv(config.labels))
     question_ids = sorted(int(value) for value in labels["questionId"].unique())
     weights = load_dimension_weights(config.rubric_dir, question_ids)
@@ -329,6 +372,8 @@ def run_e1_6(config: E16Config) -> pd.DataFrame:
 
     comparisons = [
         ("matched_full_all", "matched_full_global_structure"),
+        ("criterion_only_all", "matched_full_global_structure"),
+        ("criterion_only_all", "matched_full_all"),
         ("matched_full_global_rubric", "matched_full_global"),
         ("matched_full_rubric", "criterion_only_rubric"),
         ("matched_full_rubric", "prompt_only_rubric"),
@@ -338,12 +383,13 @@ def run_e1_6(config: E16Config) -> pd.DataFrame:
         ("matched_full_all", "generic_dimension_all"),
         ("matched_full_all", "mismatched_ensemble_all"),
     ]
-    paired_question_bootstrap(
+    paired = paired_question_bootstrap(
         details_by_model,
         comparisons,
         n_resamples=config.bootstrap_resamples,
         seed=config.seed,
-    ).to_csv(output / "paired_bootstrap.csv", index=False, float_format="%.8f")
+    )
+    paired.to_csv(output / "paired_bootstrap.csv", index=False, float_format="%.8f")
     alignment_paired = _alignment_paired_bootstrap(
         details_by_model,
         comparisons,
@@ -353,12 +399,15 @@ def run_e1_6(config: E16Config) -> pd.DataFrame:
     alignment_paired.to_csv(
         output / "alignment_paired_bootstrap.csv", index=False, float_format="%.8f"
     )
-    _write_report(output / "e1_6_conclusions.md", metrics, alignment_paired)
+    _write_report(output / "e1_6_conclusions.md", metrics, paired, alignment_paired)
 
     protocol = {
         "name": "AEOLLM-2 E1.6 rubric attribution controls",
         "outer_split": "Leave-One-Question-Out",
-        "inner_selection": "up to 5-fold GroupKFold by question, minimum MAE",
+        "inner_selection": (
+            "up to 5-fold GroupKFold by question; maximize pairwise accuracy, "
+            "then Spearman, then minimize MAE"
+        ),
         "ridge_alphas": list(RIDGE_ALPHAS),
         "query_variants": list(QUERY_CONTROL_VARIANTS),
         "factorial_feature_sets": list(FACTORIAL_FEATURE_SETS),
@@ -367,7 +416,12 @@ def run_e1_6(config: E16Config) -> pd.DataFrame:
             {str(key): int(value) for key, value in sorted(mapping.items())}
             for mapping in mismatch_maps
         ],
-        "alignment_primary": "mean question-level Spearman over comprehensiveness and instruction_following",
+        "primary_metric": "official weighted-total pairwise accuracy",
+        "secondary_metrics": ["Spearman", "Kendall"],
+        "alignment_diagnostics": [
+            "mean dimension accuracy over comprehensiveness and instruction_following",
+            "mean dimension Spearman over comprehensiveness and instruction_following",
+        ],
         "bootstrap_unit": "question",
         "bootstrap_resamples": config.bootstrap_resamples,
         "seed": config.seed,
@@ -431,7 +485,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=root / "outputs/e1/embeddings/qwen3-0.6b-query-variants",
     )
-    parser.add_argument("--output-dir", type=Path, default=root / "outputs/e1/e1_6")
+    parser.add_argument(
+        "--output-dir", type=Path, default=root / "outputs/e1/e1_6_accuracy"
+    )
     parser.add_argument("--mismatch-count", type=int, default=5)
     parser.add_argument("--bootstrap-resamples", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=20260721)
@@ -455,5 +511,9 @@ def main(argv: list[str] | None = None) -> int:
         overwrite_control_features=args.overwrite_control_features,
     )
     metrics = run_e1_6(config)
-    print(metrics.sort_values("spearman", ascending=False).to_json(orient="records", indent=2))
+    print(
+        metrics.sort_values(["accuracy", "spearman"], ascending=False).to_json(
+            orient="records", indent=2
+        )
+    )
     return 0

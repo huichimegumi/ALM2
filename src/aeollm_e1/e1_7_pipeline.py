@@ -12,10 +12,17 @@ import numpy as np
 import pandas as pd
 import sklearn
 import yaml
+from scipy.stats import spearmanr
 from sklearn.model_selection import GroupKFold
 
 from aeollm_e0.data import sha256_file
-from aeollm_e0.metrics import DIMS, KEY_COLUMNS, load_dimension_weights, normalize_labels
+from aeollm_e0.metrics import (
+    DIMS,
+    KEY_COLUMNS,
+    load_dimension_weights,
+    normalize_labels,
+    pairwise_accuracy,
+)
 from aeollm_e0.statistics import paired_question_bootstrap, question_bootstrap
 
 from .e1_4_pipeline import _evaluate
@@ -73,19 +80,33 @@ def _inner_candidate_scores(
     groups: np.ndarray,
     *,
     alphas: Sequence[float],
-) -> list[tuple[float, float]]:
+) -> list[tuple[float, float, float, float]]:
     unique_groups = np.unique(groups)
     if len(unique_groups) < 2:
         raise ValueError("inner grouped validation needs at least two questions")
     splitter = GroupKFold(n_splits=min(5, len(unique_groups)))
-    scores: list[tuple[float, float]] = []
+    scores: list[tuple[float, float, float, float]] = []
     for alpha in alphas:
-        absolute_errors: list[np.ndarray] = []
+        out_of_fold = np.full(len(y), np.nan, dtype=float)
         for train_index, validation_index in splitter.split(x, y, groups):
             model = _ridge_pipeline(float(alpha)).fit(x.iloc[train_index], y[train_index])
-            prediction = np.asarray(model.predict(x.iloc[validation_index]), dtype=float)
-            absolute_errors.append(np.abs(prediction - y[validation_index]))
-        scores.append((float(alpha), float(np.concatenate(absolute_errors).mean())))
+            out_of_fold[validation_index] = np.asarray(
+                model.predict(x.iloc[validation_index]), dtype=float
+            )
+        correct = 0
+        total = 0
+        correlations: list[float] = []
+        for question_id in unique_groups:
+            mask = groups == question_id
+            _, group_correct, group_total = pairwise_accuracy(y[mask], out_of_fold[mask])
+            correct += group_correct
+            total += group_total
+            if np.ptp(y[mask]) > 0 and np.ptp(out_of_fold[mask]) > 0:
+                correlations.append(float(spearmanr(y[mask], out_of_fold[mask])[0]))
+        accuracy = float(correct / total) if total else float("-inf")
+        spearman = float(np.mean(correlations)) if correlations else float("-inf")
+        mae = float(np.mean(np.abs(out_of_fold - y)))
+        scores.append((float(alpha), accuracy, spearman, mae))
     return scores
 
 
@@ -127,7 +148,9 @@ def nested_loqo_query_ridge_predictions(
             if not queries:
                 raise ValueError(f"no query candidates for {dimension}")
             y_train = truth.loc[train_mask, dimension].to_numpy(dtype=float)
-            ranked_candidates: list[tuple[float, int, int, str, float, int]] = []
+            ranked_candidates: list[
+                tuple[float, float, float, int, int, str, float, int]
+            ] = []
             for query_order, query in enumerate(queries):
                 if query not in frames:
                     raise ValueError(f"unknown query candidate: {query}")
@@ -139,11 +162,25 @@ def nested_loqo_query_ridge_predictions(
                 if missing:
                     raise ValueError(f"missing columns for {query}/{dimension}: {missing[:10]}")
                 x_train = frames[query].loc[train_mask, columns]
-                for alpha_order, (alpha, inner_mae) in enumerate(
+                for alpha_order, (
+                    alpha,
+                    inner_accuracy,
+                    inner_spearman,
+                    inner_mae,
+                ) in enumerate(
                     _inner_candidate_scores(x_train, y_train, groups, alphas=alphas)
                 ):
                     ranked_candidates.append(
-                        (inner_mae, query_order, alpha_order, query, alpha, len(columns))
+                        (
+                            inner_accuracy,
+                            inner_spearman,
+                            -inner_mae,
+                            -query_order,
+                            -alpha_order,
+                            query,
+                            alpha,
+                            len(columns),
+                        )
                     )
                     candidate_records.append(
                         {
@@ -151,11 +188,23 @@ def nested_loqo_query_ridge_predictions(
                             "dimension": dimension,
                             "query_source": query,
                             "alpha": alpha,
+                            "inner_accuracy": inner_accuracy,
+                            "inner_spearman": inner_spearman,
                             "inner_mae": inner_mae,
                             "feature_count": len(columns),
                         }
                     )
-            inner_mae, _, _, selected_query, alpha, feature_count = min(ranked_candidates)
+            (
+                inner_accuracy,
+                inner_spearman,
+                negative_inner_mae,
+                _,
+                _,
+                selected_query,
+                alpha,
+                feature_count,
+            ) = max(ranked_candidates)
+            inner_mae = -negative_inner_mae
             columns = list(feature_columns_by_query_dimension[selected_query][dimension])
             model = _ridge_pipeline(alpha).fit(
                 frames[selected_query].loc[train_mask, columns], y_train
@@ -169,6 +218,8 @@ def nested_loqo_query_ridge_predictions(
                     "dimension": dimension,
                     "query_source": selected_query,
                     "alpha": alpha,
+                    "inner_accuracy": inner_accuracy,
+                    "inner_spearman": inner_spearman,
                     "inner_mae": inner_mae,
                     "feature_count": feature_count,
                     "candidate_queries": "|".join(queries),
@@ -196,12 +247,18 @@ def _query_policy(
 def _write_report(
     path: Path,
     metrics: pd.DataFrame,
+    paired: pd.DataFrame,
     alignment_paired: pd.DataFrame,
     selections: pd.DataFrame,
 ) -> None:
-    ranked = metrics.sort_values("spearman", ascending=False)
-    alignment = alignment_paired[alignment_paired["metric"] == "alignment_spearman"]
-    indexed = alignment.set_index(["candidate", "reference"])
+    ranked = metrics.sort_values(["accuracy", "spearman"], ascending=False)
+    primary = paired[paired["metric"] == "accuracy"]
+    indexed = primary.set_index(["candidate", "reference"])
+    diagnostics = alignment_paired[
+        alignment_paired["metric"].isin(
+            ["alignment_accuracy", "alignment_spearman"]
+        )
+    ]
     nested_vs_base = indexed.loc[("nested_query_selective", "global_structure")]
     fixed_vs_base = indexed.loc[("fixed_dimension_selective", "global_structure")]
     nested_vs_fixed = indexed.loc[
@@ -218,7 +275,7 @@ def _write_report(
     pass_gate = (
         float(nested_vs_base["mean_delta"]) > 0
         and float(nested_vs_base["probability_delta_gt_zero"]) >= 0.90
-        and int(nested_vs_base["positive_questions"]) >= 7
+        and int(nested_vs_base["net_correct_pairs"]) > 0
     )
     lines = [
         "# E1.7 selective query Ridge",
@@ -232,18 +289,22 @@ def _write_report(
         ranked[
             [
                 "model",
+                "accuracy",
                 "spearman",
                 "kendall",
-                "accuracy",
-                "spearman_comprehensiveness",
-                "spearman_instruction_following",
+                "accuracy_comprehensiveness",
+                "accuracy_instruction_following",
                 "mae",
             ]
         ].to_markdown(index=False, floatfmt=".4f"),
         "",
-        "## Alignment comparisons",
+        "## Primary official-accuracy comparisons",
         "",
-        alignment.to_markdown(index=False, floatfmt=".4f"),
+        primary.to_markdown(index=False, floatfmt=".4f"),
+        "",
+        "## Dimension-mechanism diagnostics",
+        "",
+        diagnostics.to_markdown(index=False, floatfmt=".4f"),
         "",
         "## Nested query choices",
         "",
@@ -251,16 +312,16 @@ def _write_report(
         "",
         "## Decision",
         "",
-        f"- Nested selective minus global + structure alignment Spearman: "
+        f"- Nested selective minus global + structure official accuracy: "
         f"{float(nested_vs_base['mean_delta']):+.4f} "
         f"(95% CI [{float(nested_vs_base['ci_low']):.4f}, "
         f"{float(nested_vs_base['ci_high']):.4f}], "
         f"P(delta > 0)={float(nested_vs_base['probability_delta_gt_zero']):.4f}, "
-        f"{int(nested_vs_base['positive_questions'])}/10 questions positive).",
+        f"{int(nested_vs_base['net_correct_pairs'])} net correct pairs).",
         f"- Fixed dimension policy minus global + structure: "
         f"{float(fixed_vs_base['mean_delta']):+.4f}; nested minus fixed: "
         f"{float(nested_vs_fixed['mean_delta']):+.4f}.",
-        f"- Pre-specified E1.7 alignment gate: **{'PASS' if pass_gate else 'FAIL'}**.",
+        f"- E1.7 official-accuracy gate: **{'PASS' if pass_gate else 'FAIL'}**.",
         *(
             [
                 "- This pass supports selective fixed-representation rubric routing; it does not",
@@ -274,14 +335,16 @@ def _write_report(
         ),
         "- The fixed dimension policy is an exploratory, researcher-informed analysis",
         "  motivated by E1.6; its stronger total score is not fresh confirmatory evidence.",
-        "- The nested MAE policy chose full queries for instruction following in every fold",
-        "  and for comprehensiveness in nine folds. Its stable choice differs from the",
-        "  criterion-only comprehensiveness policy that gives the best outer ranking result.",
+        "- The nested policy records its fold-level query choices above.",
+        "  Query-policy differences should be interpreted through paired outer-fold",
+        "  accuracy rather than by selecting the highest observed point estimate.",
         "",
         "## Leakage controls",
         "",
         "- Query source and Ridge alpha are selected jointly inside each outer training set.",
-        "- Inner validation is grouped by question and minimizes document-level MAE.",
+        "- Prospective inner validation maximizes grouped pairwise accuracy, then",
+        "  Spearman, then minimizes MAE. A retrospective note means saved predictions",
+        "  retain their historical selection objective.",
         "- The held-out question is never used for query selection, scaling, or fitting.",
         "- Query candidates are ordered `matched_full`, then `criterion_only`; that order",
         "  is used only as a deterministic exact-tie break.",
@@ -296,6 +359,24 @@ def run_e1_7(config: E17Config) -> pd.DataFrame:
     output.mkdir(parents=True, exist_ok=True)
     prediction_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    selection_marker = checkpoint_dir / "selection_objective.json"
+    selection_protocol = {
+        "primary": "grouped_pairwise_accuracy",
+        "tie_breaks": ["grouped_spearman", "mae", "declared_candidate_order"],
+    }
+    if any(checkpoint_dir.glob("*.csv")) and not selection_marker.exists():
+        raise ValueError(
+            "existing E1.7 checkpoints use the historical selection protocol; "
+            "run the accuracy-first protocol with a new --output-dir"
+        )
+    if selection_marker.exists():
+        observed = json.loads(selection_marker.read_text(encoding="utf-8"))
+        if observed != selection_protocol:
+            raise ValueError("E1.7 checkpoint selection protocol does not match")
+    else:
+        selection_marker.write_text(
+            json.dumps(selection_protocol, indent=2) + "\n", encoding="utf-8"
+        )
 
     labels = normalize_labels(pd.read_csv(config.labels))
     question_ids = sorted(int(value) for value in labels["questionId"].unique())
@@ -426,12 +507,13 @@ def run_e1_7(config: E17Config) -> pd.DataFrame:
         ("nested_query_selective", "fixed_dimension_selective"),
         ("nested_query_selective", "matched_full_selective"),
     ]
-    paired_question_bootstrap(
+    paired = paired_question_bootstrap(
         details_by_model,
         comparisons,
         n_resamples=config.bootstrap_resamples,
         seed=config.seed,
-    ).to_csv(output / "paired_bootstrap.csv", index=False, float_format="%.8f")
+    )
+    paired.to_csv(output / "paired_bootstrap.csv", index=False, float_format="%.8f")
     alignment_paired = _alignment_paired_bootstrap(
         details_by_model,
         comparisons,
@@ -442,7 +524,11 @@ def run_e1_7(config: E17Config) -> pd.DataFrame:
         output / "alignment_paired_bootstrap.csv", index=False, float_format="%.8f"
     )
     _write_report(
-        output / "e1_7_conclusions.md", metrics, alignment_paired, all_selections
+        output / "e1_7_conclusions.md",
+        metrics,
+        paired,
+        alignment_paired,
+        all_selections,
     )
 
     protocol = {
@@ -450,9 +536,12 @@ def run_e1_7(config: E17Config) -> pd.DataFrame:
         "outer_split": "Leave-One-Question-Out",
         "inner_selection": (
             "joint query-source and Ridge-alpha selection using up to 5-fold "
-            "GroupKFold by question, minimum document-level MAE"
+            "GroupKFold by question; maximize pairwise accuracy, then Spearman, "
+            "then minimize MAE"
         ),
         "query_candidates": list(QUERY_SOURCES),
+        "primary_metric": "official weighted-total pairwise accuracy",
+        "secondary_metrics": ["Spearman", "Kendall"],
         "query_candidate_tie_break_order": list(QUERY_SOURCES),
         "ridge_alphas": list(RIDGE_ALPHAS),
         "alignment_dimensions": list(ALIGNMENT_DIMS),
@@ -464,10 +553,10 @@ def run_e1_7(config: E17Config) -> pd.DataFrame:
         },
         "primary_gate": {
             "comparison": "nested_query_selective > global_structure",
-            "metric": "mean question-level Spearman over alignment dimensions",
+            "metric": "official weighted-total pairwise accuracy",
             "mean_delta": "> 0",
             "bootstrap_probability_delta_gt_zero": ">= 0.90",
-            "positive_questions": ">= 7/10",
+            "net_correct_pairs": "> 0",
         },
         "bootstrap_unit": "question",
         "bootstrap_resamples": config.bootstrap_resamples,
@@ -537,7 +626,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=root / "outputs/e1/e1_6/control_features/criterion_only",
     )
-    parser.add_argument("--output-dir", type=Path, default=root / "outputs/e1/e1_7")
+    parser.add_argument(
+        "--output-dir", type=Path, default=root / "outputs/e1/e1_7_accuracy"
+    )
     parser.add_argument("--bootstrap-resamples", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=20260721)
     return parser.parse_args(argv)
@@ -556,5 +647,9 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
     )
     metrics = run_e1_7(config)
-    print(metrics.sort_values("spearman", ascending=False).to_json(orient="records", indent=2))
+    print(
+        metrics.sort_values(["accuracy", "spearman"], ascending=False).to_json(
+            orient="records", indent=2
+        )
+    )
     return 0

@@ -62,10 +62,12 @@ def test_grouped_ridge_fold_returns_train_offsets_and_test_predictions() -> None
     x_test = pd.DataFrame({"feature": [0.5, 1.5]})
     y_train = np.asarray([2.0, 4.0, 2.4, 4.4])
     groups = np.asarray([1, 1, 2, 2])
-    train, test, alpha, inner_mae = fit_grouped_ridge_fold(
+    train, test, alpha, inner_accuracy, inner_spearman, inner_mae = fit_grouped_ridge_fold(
         x_train, x_test, y_train, groups, alphas=(0.1, 1.0)
     )
     assert train.shape == (4,)
     assert test.shape == (2,)
     assert alpha in {0.1, 1.0}
+    assert np.isfinite(inner_accuracy)
+    assert np.isfinite(inner_spearman)
     assert np.isfinite(inner_mae)

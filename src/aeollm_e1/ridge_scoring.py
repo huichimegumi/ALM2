@@ -6,13 +6,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from aeollm_e0.metrics import DIMS, KEY_COLUMNS
+from aeollm_e0.metrics import DIMS, KEY_COLUMNS, pairwise_accuracy
 
 RIDGE_ALPHAS = (0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)
 SURFACE_EXCLUDED = {
@@ -90,24 +91,38 @@ def _select_alpha(
     y: np.ndarray,
     groups: np.ndarray,
     alphas: Sequence[float],
-) -> tuple[float, float]:
+) -> tuple[float, float, float, float]:
     unique_groups = np.unique(groups)
     if len(unique_groups) < 2:
         raise ValueError("inner grouped validation needs at least two questions")
     splitter = GroupKFold(n_splits=min(5, len(unique_groups)))
-    best_alpha = float(alphas[0])
-    best_mae = float("inf")
+    candidates: list[tuple[float, float, float, int, float]] = []
     for alpha in alphas:
-        fold_mae: list[float] = []
+        out_of_fold = np.full(len(y), np.nan, dtype=float)
         for train_index, validation_index in splitter.split(x, y, groups):
             model = _ridge_pipeline(float(alpha)).fit(x.iloc[train_index], y[train_index])
-            prediction = np.asarray(model.predict(x.iloc[validation_index]), dtype=float)
-            fold_mae.append(float(np.mean(np.abs(prediction - y[validation_index]))))
-        mean_mae = float(np.mean(fold_mae))
-        if mean_mae < best_mae:
-            best_alpha = float(alpha)
-            best_mae = mean_mae
-    return best_alpha, best_mae
+            out_of_fold[validation_index] = np.asarray(
+                model.predict(x.iloc[validation_index]), dtype=float
+            )
+        correct = 0
+        total = 0
+        correlations: list[float] = []
+        for question_id in unique_groups:
+            mask = groups == question_id
+            accuracy, group_correct, group_total = pairwise_accuracy(
+                y[mask], out_of_fold[mask]
+            )
+            if np.isfinite(accuracy):
+                correct += group_correct
+                total += group_total
+            if np.ptp(y[mask]) > 0 and np.ptp(out_of_fold[mask]) > 0:
+                correlations.append(float(spearmanr(y[mask], out_of_fold[mask])[0]))
+        accuracy = float(correct / total) if total else float("-inf")
+        spearman = float(np.mean(correlations)) if correlations else float("-inf")
+        mae = float(np.mean(np.abs(out_of_fold - y)))
+        candidates.append((accuracy, spearman, -mae, -len(candidates), float(alpha)))
+    accuracy, spearman, negative_mae, _, best_alpha = max(candidates)
+    return best_alpha, accuracy, spearman, -negative_mae
 
 
 def fit_grouped_ridge_fold(
@@ -117,7 +132,7 @@ def fit_grouped_ridge_fold(
     groups: np.ndarray,
     *,
     alphas: Sequence[float] = RIDGE_ALPHAS,
-) -> tuple[np.ndarray, np.ndarray, float, float]:
+) -> tuple[np.ndarray, np.ndarray, float, float, float, float]:
     """Fit one leakage-safe outer-fold Ridge model and return train/test predictions."""
     if not alphas or any(float(alpha) <= 0 for alpha in alphas):
         raise ValueError("all Ridge alphas must be positive")
@@ -125,11 +140,20 @@ def fit_grouped_ridge_fold(
     groups = np.asarray(groups)
     if len(x_train) != len(y_train) or len(groups) != len(y_train):
         raise ValueError("training features, targets, and groups must have equal length")
-    alpha, inner_mae = _select_alpha(x_train, y_train, groups, alphas)
+    alpha, inner_accuracy, inner_spearman, inner_mae = _select_alpha(
+        x_train, y_train, groups, alphas
+    )
     model = _ridge_pipeline(alpha).fit(x_train, y_train)
     train_prediction = np.clip(np.asarray(model.predict(x_train), dtype=float), 0.0, 10.0)
     test_prediction = np.clip(np.asarray(model.predict(x_test), dtype=float), 0.0, 10.0)
-    return train_prediction, test_prediction, alpha, inner_mae
+    return (
+        train_prediction,
+        test_prediction,
+        alpha,
+        inner_accuracy,
+        inner_spearman,
+        inner_mae,
+    )
 
 
 def nested_loqo_ridge_predictions(
@@ -165,7 +189,9 @@ def nested_loqo_ridge_predictions(
             x_train = data.loc[train_mask, columns]
             x_test = data.loc[test_mask, columns]
             y_train = data.loc[train_mask, dimension].to_numpy(dtype=float)
-            alpha, inner_mae = _select_alpha(x_train, y_train, groups, alphas)
+            alpha, inner_accuracy, inner_spearman, inner_mae = _select_alpha(
+                x_train, y_train, groups, alphas
+            )
             model = _ridge_pipeline(alpha).fit(x_train, y_train)
             result.loc[test_mask, dimension] = np.clip(model.predict(x_test), 0.0, 10.0)
             selections.append(
@@ -173,6 +199,8 @@ def nested_loqo_ridge_predictions(
                     "held_out_question": int(held_out),
                     "dimension": dimension,
                     "alpha": alpha,
+                    "inner_accuracy": inner_accuracy,
+                    "inner_spearman": inner_spearman,
                     "inner_mae": inner_mae,
                     "feature_count": len(columns),
                     "train_documents": int(train_mask.sum()),

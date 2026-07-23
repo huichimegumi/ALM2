@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -13,7 +14,7 @@ from sklearn.model_selection import GroupKFold, KFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from .metrics import DIMS, KEY_COLUMNS
+from .metrics import DIMS, KEY_COLUMNS, pairwise_accuracy
 
 ALPHAS = (0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)
 METADATA_COLUMNS = ["model_id", "prompt_variant"]
@@ -51,19 +52,46 @@ def _select_alpha(
 ) -> float:
     unique_groups = np.unique(groups)
     splitter = GroupKFold(n_splits=min(5, len(unique_groups)))
-    best_alpha = ALPHAS[0]
-    best_loss = np.inf
+    candidates: list[tuple[float, float, float, int, float]] = []
     for alpha in ALPHAS:
-        losses = []
+        prediction = np.full_like(y, np.nan, dtype=float)
         for train_index, validation_index in splitter.split(x, y, groups):
             model = builder(alpha)
             model.fit(x.iloc[train_index], y[train_index])
-            prediction = np.asarray(model.predict(x.iloc[validation_index]), dtype=float)
-            losses.append(float(np.mean(np.abs(prediction - y[validation_index]))))
-        loss = float(np.mean(losses))
-        if loss < best_loss:
-            best_alpha, best_loss = alpha, loss
-    return best_alpha
+            prediction[validation_index] = np.asarray(
+                model.predict(x.iloc[validation_index]), dtype=float
+            )
+        target_matrix = y[:, None] if y.ndim == 1 else y
+        prediction_matrix = prediction[:, None] if prediction.ndim == 1 else prediction
+        correct = 0
+        total = 0
+        correlations: list[float] = []
+        for question_id in unique_groups:
+            mask = groups == question_id
+            for column in range(target_matrix.shape[1]):
+                _, group_correct, group_total = pairwise_accuracy(
+                    target_matrix[mask, column],
+                    prediction_matrix[mask, column],
+                )
+                correct += group_correct
+                total += group_total
+                if (
+                    np.ptp(target_matrix[mask, column]) > 0
+                    and np.ptp(prediction_matrix[mask, column]) > 0
+                ):
+                    correlations.append(
+                        float(
+                            spearmanr(
+                                target_matrix[mask, column],
+                                prediction_matrix[mask, column],
+                            )[0]
+                        )
+                    )
+        accuracy = float(correct / total) if total else float("-inf")
+        spearman = float(np.mean(correlations)) if correlations else float("-inf")
+        mae = float(np.mean(np.abs(prediction_matrix - target_matrix)))
+        candidates.append((accuracy, spearman, -mae, -len(candidates), float(alpha)))
+    return max(candidates)[-1]
 
 
 def loqo_ridge_predictions(

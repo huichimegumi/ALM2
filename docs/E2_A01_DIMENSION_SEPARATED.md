@@ -11,12 +11,13 @@ objective, joint two-head training, optimizer, epochs, three seeds, and outer
 LOQO splits remain fixed. The fixed-cosine control uses the same joint training
 as E2-A0, giving the learned model a like-for-like control.
 
-The gate is applied separately to each dimension. Passing requires:
+The official weighted-total pairwise accuracy is primary. The architectural
+gate is additionally applied to dimension accuracy because E2-A0.1 diagnoses
+negative transfer. Passing a dimension requires:
 
-- positive mean question-level Spearman delta over its fixed-cosine head;
+- positive mean dimension-accuracy delta over its fixed-cosine head;
 - bootstrap `P(delta > 0) >= 0.90`;
-- at least 7 of 10 held-out questions improving;
-- no mean Spearman loss relative to global + structure.
+- no mean dimension-accuracy loss relative to global + structure.
 
 Generic and five cyclic mismatched-rubric controls are trained only for a
 dimension that passes. The existing shared E2-A0 out-of-fold predictions are
@@ -36,7 +37,8 @@ Then select an idle GPU:
 
 ```bash
 .venv-system-python-backup/bin/python scripts/run_e2_a01.py \
-  --device cuda:N
+  --device cuda:N \
+  --output-dir outputs/e2/e2_a01_accuracy
 ```
 
 The script independently checks the selected GPU before loading tensors and

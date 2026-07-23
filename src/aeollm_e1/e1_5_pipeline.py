@@ -162,7 +162,7 @@ def _evaluate(
 
 
 def _write_report(path: Path, metrics: pd.DataFrame, paired: pd.DataFrame) -> None:
-    ranked = metrics.sort_values("spearman", ascending=False)
+    ranked = metrics.sort_values(["accuracy", "spearman"], ascending=False)
     lines = [
         "# E1.5 Huber and within-question pairwise results",
         "",
@@ -172,7 +172,7 @@ def _write_report(path: Path, metrics: pd.DataFrame, paired: pd.DataFrame) -> No
         "",
         "## Main results",
         "",
-        ranked[["model", "spearman", "kendall", "accuracy", "mae", "rmse"]].to_markdown(
+        ranked[["model", "accuracy", "spearman", "kendall", "mae", "rmse"]].to_markdown(
             index=False, floatfmt=".4f"
         ),
         "",
@@ -184,9 +184,9 @@ def _write_report(path: Path, metrics: pd.DataFrame, paired: pd.DataFrame) -> No
         pair = indexed.loc[f"mlp_{feature_set}_huber_pair"]
         reg = indexed.loc[f"mlp_{feature_set}_huber"]
         lines.append(
-            f"- {feature_set}: pairwise minus Huber Spearman = "
-            f"{float(pair['spearman']) - float(reg['spearman']):+.4f}; "
-            f"Accuracy = {float(pair['accuracy']) - float(reg['accuracy']):+.4f}."
+            f"- {feature_set}: pairwise minus Huber accuracy = "
+            f"{float(pair['accuracy']) - float(reg['accuracy']):+.4f}; "
+            f"Spearman = {float(pair['spearman']) - float(reg['spearman']):+.4f}."
         )
     lines.extend(
         [
@@ -289,6 +289,8 @@ def run_e1_5(config: E15Config, training: MLPTrainingConfig) -> pd.DataFrame:
         "name": "AEOLLM-2 E1.5 fixed MLP Huber/pairwise comparison",
         "outer_split": "Leave-One-Question-Out",
         "model_selection": "none; all hyperparameters and epochs fixed",
+        "primary_metric": "official weighted-total pairwise accuracy",
+        "secondary_metrics": ["Spearman", "Kendall"],
         "pair_scope": "within question and dimension only",
         "seed_ensemble": list(config.seeds),
         "training": config_dict(training),
@@ -349,7 +351,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=root / "outputs/e1/e1_4/predictions/all_unbounded.tsv",
     )
-    parser.add_argument("--output-dir", type=Path, default=root / "outputs/e1/e1_5")
+    parser.add_argument(
+        "--output-dir", type=Path, default=root / "outputs/e1/e1_5_accuracy"
+    )
     parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--bootstrap-resamples", type=int, default=5000)
     return parser.parse_args(argv)
@@ -368,5 +372,5 @@ def main(argv: list[str] | None = None) -> int:
     )
     training = MLPTrainingConfig(epochs=args.epochs)
     metrics = run_e1_5(config, training)
-    print(metrics[["model", "spearman", "kendall", "accuracy", "mae"]].to_string(index=False))
+    print(metrics[["model", "accuracy", "spearman", "kendall", "mae"]].to_string(index=False))
     return 0

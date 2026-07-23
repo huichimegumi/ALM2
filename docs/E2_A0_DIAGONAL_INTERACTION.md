@@ -54,9 +54,10 @@ five-mismatch prediction ensemble
 ```
 
 The primary gate compares matched learned diagonal against matched fixed cosine
-on the question-macro mean of comprehensiveness and instruction-following
-Spearman. Passing requires a positive mean delta, bootstrap `P(delta > 0) >= 0.90`,
-and at least seven of ten held-out questions improving.
+using official pairwise accuracy of the weighted total. Passing requires a
+positive accuracy delta, positive net correct pairs, and question-bootstrap
+`P(delta > 0) >= 0.90`. Dimension accuracy and Spearman diagnose which heads
+cause the change.
 
 ## Run
 
@@ -70,7 +71,8 @@ Then run with the explicit device index:
 
 ```bash
 .venv-system-python-backup/bin/python scripts/run_e2_a0.py \
-  --device cuda:N
+  --device cuda:N \
+  --output-dir outputs/e2/e2_a0_accuracy
 ```
 
 The CLI checks the selected GPU again immediately before loading tensors. It

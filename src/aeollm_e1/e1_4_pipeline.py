@@ -109,18 +109,20 @@ def _merge_feature_sources(e1: pd.DataFrame, surface: pd.DataFrame) -> pd.DataFr
 
 
 def _write_report(path: Path, metrics: pd.DataFrame, paired: pd.DataFrame) -> None:
-    ranked = metrics.sort_values("spearman", ascending=False)
+    ranked = metrics.sort_values(["accuracy", "spearman"], ascending=False)
     indexed = metrics.set_index("model")
     lines = [
         "# E1.4 nested LOQO Ridge results",
         "",
-        "All predictions are outer leave-one-question-out. Ridge alpha is selected",
-        "inside each outer training split using question-grouped cross-validation and MAE.",
+        "All predictions are outer leave-one-question-out. Prospective runs select",
+        "Ridge alpha inside each outer training split using grouped pairwise accuracy,",
+        "with Spearman and then MAE as deterministic tie-breaks. A retrospective note,",
+        "when present, means the displayed saved predictions retain historical selection.",
         "E1.5 ranking losses are not used here.",
         "",
         "## Main results",
         "",
-        ranked[["model", "spearman", "kendall", "accuracy", "mae", "rmse"]].to_markdown(
+        ranked[["model", "accuracy", "spearman", "kendall", "mae", "rmse"]].to_markdown(
             index=False, floatfmt=".4f"
         ),
         "",
@@ -133,10 +135,10 @@ def _write_report(path: Path, metrics: pd.DataFrame, paired: pd.DataFrame) -> No
         all_model = indexed.loc[f"all_{representation}"]
         lines.extend(
             [
-                f"- {representation}: rubric minus global Spearman = "
-                f"{float(rubric['spearman']) - float(glob['spearman']):+.4f}.",
-                f"- {representation}: all minus rubric Spearman = "
-                f"{float(all_model['spearman']) - float(rubric['spearman']):+.4f}.",
+                f"- {representation}: rubric minus global accuracy = "
+                f"{float(rubric['accuracy']) - float(glob['accuracy']):+.4f}.",
+                f"- {representation}: all minus rubric accuracy = "
+                f"{float(all_model['accuracy']) - float(rubric['accuracy']):+.4f}.",
             ]
         )
     lines.extend(
@@ -152,7 +154,10 @@ def _write_report(path: Path, metrics: pd.DataFrame, paired: pd.DataFrame) -> No
             "- `structure` reuses E0 surface features and excludes generator/prompt metadata.",
             "- `all_*` combines global embeddings, target-dimension rubric features, and structure.",
             "- Fixed top-3/top-5 and chunk-count diagnostic features are excluded.",
-            "- Prefer question-level paired uncertainty over pair-level significance claims.",
+            "- Accuracy is the primary metric; Spearman diagnoses large rank displacement.",
+            "- Kendall is reported as an accuracy-consistency check because the current",
+            "  weighted totals contain almost no ties.",
+            "- Prefer question-level paired uncertainty over treating pairs as independent.",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -264,7 +269,11 @@ def run_e1_4(config: E14Config) -> pd.DataFrame:
     protocol = {
         "name": "AEOLLM-2 E1.4 nested LOQO Ridge",
         "outer_split": "Leave-One-Question-Out",
-        "inner_selection": "up to 5-fold GroupKFold by question, minimum MAE",
+        "inner_selection": (
+            "up to 5-fold GroupKFold by question; maximize pairwise accuracy, "
+            "then Spearman, then minimize MAE"
+        ),
+        "primary_metric": "official weighted-total pairwise accuracy",
         "ridge_alphas": list(RIDGE_ALPHAS),
         "score_clip": [0.0, 10.0],
         "bootstrap_unit": "question",
@@ -322,7 +331,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=root / "outputs/e1/features/qwen3-0.6b-unbounded",
     )
-    parser.add_argument("--output-dir", type=Path, default=root / "outputs/e1/e1_4")
+    parser.add_argument(
+        "--output-dir", type=Path, default=root / "outputs/e1/e1_4_accuracy"
+    )
     parser.add_argument("--bootstrap-resamples", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=20260721)
     return parser.parse_args(argv)
@@ -341,5 +352,5 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
     )
     metrics = run_e1_4(config)
-    print(metrics[["model", "spearman", "kendall", "accuracy", "mae"]].to_string(index=False))
+    print(metrics[["model", "accuracy", "spearman", "kendall", "mae"]].to_string(index=False))
     return 0

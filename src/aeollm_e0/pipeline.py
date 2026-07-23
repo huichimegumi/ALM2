@@ -224,8 +224,8 @@ def _write_summary_report(
     paired: pd.DataFrame,
     integrity_errors: list[str],
 ) -> None:
-    ranked = metrics.sort_values("spearman", ascending=False)
-    display_columns = ["model", "spearman", "kendall", "accuracy", "mae", "rmse"]
+    ranked = metrics.sort_values(["accuracy", "spearman"], ascending=False)
+    display_columns = ["model", "accuracy", "spearman", "kendall", "mae", "rmse"]
     indexed = metrics.set_index("model")
     surface = indexed.loc["surface_ridge_loqo"]
     metadata = indexed.loc["metadata_ridge_loqo"]
@@ -243,9 +243,9 @@ def _write_summary_report(
         "",
         "## Observed findings",
         "",
-        f"- Surface-only LOQO reaches Spearman {surface['spearman']:.4f}, Kendall {surface['kendall']:.4f}, and Accuracy {surface['accuracy']:.4f}; superficial document properties contain signal but do not explain ODAT.",
-        f"- Generator/prompt metadata alone reaches Spearman {metadata['spearman']:.4f}. This is evidence of source/prompt confounding and must remain a diagnostic rather than a final evaluator.",
-        f"- Adding metadata to surface features changes Spearman from {surface['spearman']:.4f} to {mixed['spearman']:.4f}; see the paired question bootstrap below for uncertainty.",
+        f"- Surface-only LOQO reaches Accuracy {surface['accuracy']:.4f}, Spearman {surface['spearman']:.4f}, and Kendall {surface['kendall']:.4f}; superficial document properties contain signal but do not explain ODAT.",
+        f"- Generator/prompt metadata alone reaches Accuracy {metadata['accuracy']:.4f}. This is evidence of source/prompt confounding and must remain a diagnostic rather than a final evaluator.",
+        f"- Adding metadata to surface features changes Accuracy from {surface['accuracy']:.4f} to {mixed['accuracy']:.4f}; see the paired question bootstrap below for uncertainty.",
         f"- Affine LOQO calibration reduces ODAT weighted-total MAE from {odat['mae']:.4f} to {affine['mae']:.4f} ({mae_reduction:.1f}% reduction), while its three official ranking metrics are unchanged at displayed precision. ODAT therefore has a large scale bias that simple calibration can fix, but calibration does not improve its ordering.",
         f"- Random document splitting changes surface-model MAE from {surface['mae']:.4f} (LOQO) to {indexed.loc['random_split_surface_ridge', 'mae']:.4f}. Its rank metrics are not directly interpretable because documents within a question are scored by different fold models; LOQO remains the sole primary protocol.",
         "",
@@ -290,8 +290,13 @@ def run_e0(config: E0Config) -> pd.DataFrame:
     protocol = {
         "name": "AEOLLM-2 E0",
         "primary_split": "Leave-One-Question-Out",
-        "inner_selection": "GroupKFold by question, MAE",
-        "official_metrics": ["Spearman", "Kendall", "Pairwise Accuracy"],
+        "inner_selection": (
+            "GroupKFold by question; maximize pairwise accuracy, then Spearman, "
+            "then minimize MAE"
+        ),
+        "primary_metric": "Pairwise Accuracy",
+        "secondary_metrics": ["Spearman", "Kendall"],
+        "official_metrics": ["Pairwise Accuracy", "Spearman", "Kendall"],
         "official_aggregation": {
             "spearman": "macro mean over questions",
             "kendall": "macro mean over questions",
@@ -407,6 +412,8 @@ def run_e0(config: E0Config) -> pd.DataFrame:
         ("surface_ridge_loqo", "mean_loqo"),
         ("metadata_ridge_loqo", "mean_loqo"),
         ("surface_metadata_ridge_loqo", "surface_ridge_loqo"),
+        ("odat_raw", "surface_ridge_loqo"),
+        ("odat_raw", "metadata_ridge_loqo"),
         ("odat_affine_loqo", "odat_raw"),
         ("odat_isotonic_loqo", "odat_raw"),
         ("odat_multioutput_ridge_loqo", "odat_raw"),
@@ -470,7 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=root
         / "legacy/aeollm2_train_code/outputs/baseline_onedim_decimal_thinking-off_deepseek-v4-pro.txt",
     )
-    parser.add_argument("--output-dir", type=Path, default=root / "outputs/e0")
+    parser.add_argument("--output-dir", type=Path, default=root / "outputs/e0_accuracy")
     parser.add_argument("--bootstrap-resamples", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=20260721)
     return parser
@@ -490,6 +497,6 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
     )
     metrics = run_e0(config)
-    print(metrics[["model", "spearman", "kendall", "accuracy", "mae"]].to_string(index=False))
+    print(metrics[["model", "accuracy", "spearman", "kendall", "mae"]].to_string(index=False))
     print(f"\nE0 outputs: {config.output_dir.resolve()}")
     return 0

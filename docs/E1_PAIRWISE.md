@@ -17,6 +17,8 @@ against Huber plus weighted pairwise logistic loss.
 - Pair construction is restricted to documents from the same question and dimension.
 - Score gaps at or below 0.1 are ignored; larger gaps weight the loss up to 2.0.
 - Pair weights are mean-normalized and `lambda_pair = 0.5`.
+- Official weighted-total pairwise accuracy is the primary endpoint; Spearman
+  is secondary and Kendall checks accuracy consistency.
 
 The selected unbounded representation is used because E1.4 showed it was
 materially better than capped for rubric-only features. Three feature groups are

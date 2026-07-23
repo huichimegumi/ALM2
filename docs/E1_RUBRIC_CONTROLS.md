@@ -34,9 +34,10 @@ global + rubric + structure
 ```
 
 All variants preserve E1.4's nested LOQO protocol. Scaling, imputation, alpha
-selection, and fitting occur only on outer-training questions. The research
-contrast is the mean question-level Spearman over comprehensiveness and
-instruction following. Official weighted-total metrics remain reported.
+selection, and fitting occur only on outer-training questions. Official
+pairwise accuracy of the weighted total is primary; dimension accuracy and
+Spearman over comprehensiveness and instruction following are mechanism
+diagnostics.
 
 ## Run
 
@@ -58,7 +59,8 @@ before allocating the model.
 Then build the CPU-only controls and run nested LOQO Ridge:
 
 ```bash
-.venv-system-python-backup/bin/python scripts/run_e1_6.py
+.venv-system-python-backup/bin/python scripts/run_e1_6.py \
+  --output-dir outputs/e1/e1_6_accuracy
 ```
 
 Outputs are written under `outputs/e1/e1_6/`. They include all out-of-fold

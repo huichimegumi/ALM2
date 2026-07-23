@@ -29,7 +29,7 @@ def _row(
 def test_dimension_gates_are_independent_and_require_baseline_noninferiority() -> None:
     rows = []
     for dimension in ("comprehensiveness", "instruction_following"):
-        metric = f"spearman_{dimension}"
+        metric = f"accuracy_{dimension}"
         rows.append(
             _row(
                 "fixed_matched_hybrid",

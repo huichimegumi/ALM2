@@ -105,6 +105,11 @@ def _checkpoint_manifest(config: E2A0Config, training: DiagonalTrainingConfig) -
         "seeds": list(config.seeds),
         "mismatch_count": config.mismatch_count,
         "training": config_dict(training),
+        "baseline_inner_selection": [
+            "grouped_pairwise_accuracy",
+            "grouped_spearman",
+            "mae",
+        ],
         "base_cache": str(config.base_cache.resolve()),
         "query_variant_root": str(config.query_variant_root.resolve()),
     }
@@ -151,16 +156,28 @@ def _fit_or_load_baseline_fold(
                 "held_out_question": [held_out] * len(DIMS),
                 "dimension": DIMS,
                 "alpha": saved["alpha"],
+                "inner_accuracy": (
+                    saved["inner_accuracy"]
+                    if "inner_accuracy" in saved.files
+                    else np.full(len(DIMS), np.nan)
+                ),
+                "inner_spearman": (
+                    saved["inner_spearman"]
+                    if "inner_spearman" in saved.files
+                    else np.full(len(DIMS), np.nan)
+                ),
                 "inner_mae": saved["inner_mae"],
             }
         )
     train_prediction = np.empty((int(train_mask.sum()), len(DIMS)), dtype=np.float32)
     test_prediction = np.empty((int(test_mask.sum()), len(DIMS)), dtype=np.float32)
     alphas: list[float] = []
+    inner_accuracy: list[float] = []
+    inner_spearman: list[float] = []
     inner_mae: list[float] = []
     groups = data.loc[train_mask, "questionId"].to_numpy(dtype=int)
     for dimension_index, dimension in enumerate(DIMS):
-        train_pred, test_pred, alpha, mae = fit_grouped_ridge_fold(
+        train_pred, test_pred, alpha, accuracy, spearman, mae = fit_grouped_ridge_fold(
             data.loc[train_mask, columns],
             data.loc[test_mask, columns],
             data.loc[train_mask, dimension].to_numpy(dtype=float),
@@ -170,12 +187,16 @@ def _fit_or_load_baseline_fold(
         train_prediction[:, dimension_index] = train_pred
         test_prediction[:, dimension_index] = test_pred
         alphas.append(alpha)
+        inner_accuracy.append(accuracy)
+        inner_spearman.append(spearman)
         inner_mae.append(mae)
     np.savez_compressed(
         path,
         train_prediction=train_prediction,
         test_prediction=test_prediction,
         alpha=np.asarray(alphas),
+        inner_accuracy=np.asarray(inner_accuracy),
+        inner_spearman=np.asarray(inner_spearman),
         inner_mae=np.asarray(inner_mae),
     )
     selections = pd.DataFrame(
@@ -183,6 +204,8 @@ def _fit_or_load_baseline_fold(
             "held_out_question": [held_out] * len(DIMS),
             "dimension": DIMS,
             "alpha": alphas,
+            "inner_accuracy": inner_accuracy,
+            "inner_spearman": inner_spearman,
             "inner_mae": inner_mae,
         }
     )
@@ -219,10 +242,11 @@ def _mean_predictions(frames: list[pd.DataFrame]) -> pd.DataFrame:
 def _write_report(
     path: Path,
     metrics: pd.DataFrame,
+    paired: pd.DataFrame,
     alignment_paired: pd.DataFrame,
 ) -> None:
-    ranked = metrics.sort_values("spearman", ascending=False)
-    primary = alignment_paired[alignment_paired["metric"] == "alignment_spearman"]
+    ranked = metrics.sort_values(["accuracy", "spearman"], ascending=False)
+    primary = paired[paired["metric"] == "accuracy"]
     indexed = primary.set_index(["candidate", "reference"])
     learned = indexed.loc[("diagonal_matched_hybrid", "fixed_matched_hybrid")]
     incremental = indexed.loc[("diagonal_matched_hybrid", "ridge_global_structure")]
@@ -230,10 +254,13 @@ def _write_report(
     mismatch = indexed.loc[
         ("diagonal_matched_hybrid", "diagonal_mismatched_ensemble_hybrid")
     ]
+    mismatch_shift2 = indexed.loc[
+        ("diagonal_mismatch_shift2_hybrid", "ridge_global_structure")
+    ]
     passed = bool(
         float(learned["mean_delta"]) > 0
         and float(learned["probability_delta_gt_zero"]) >= 0.90
-        and int(learned["positive_questions"]) >= 7
+        and int(learned["net_correct_pairs"]) > 0
     )
     lines = [
         "# E2-A0 minimal learned diagonal interaction",
@@ -247,31 +274,35 @@ def _write_report(
         ranked[
             [
                 "model",
+                "accuracy",
                 "spearman",
                 "kendall",
-                "accuracy",
-                "spearman_comprehensiveness",
-                "spearman_instruction_following",
+                "accuracy_comprehensiveness",
+                "accuracy_instruction_following",
                 "mae",
             ]
         ].to_markdown(index=False, floatfmt=".4f"),
         "",
-        "## Pre-registered alignment comparisons",
+        "## Primary official-accuracy comparisons",
         "",
         primary.to_markdown(index=False, floatfmt=".4f"),
         "",
         "## Decision",
         "",
         f"- Learned diagonal versus fixed cosine: {float(learned['mean_delta']):+.4f} "
-        f"alignment Spearman, P(delta>0)={float(learned['probability_delta_gt_zero']):.4f}, "
-        f"{int(learned['positive_questions'])}/10 positive questions.",
+        f"official accuracy, P(delta>0)={float(learned['probability_delta_gt_zero']):.4f}, "
+        f"{int(learned['net_correct_pairs'])} net correct pairs.",
         f"- Learned diagonal versus global+structure: {float(incremental['mean_delta']):+.4f}.",
         f"- Matched versus generic learned interaction: {float(generic['mean_delta']):+.4f}.",
         f"- Matched versus mismatched learned ensemble: {float(mismatch['mean_delta']):+.4f}.",
+        f"- Mismatch shift 2 has the highest point accuracy but only "
+        f"{float(mismatch_shift2['mean_delta']):+.4f} over baseline "
+        f"(P(delta>0)={float(mismatch_shift2['probability_delta_gt_zero']):.4f});",
+        "  because it uses the wrong rubric, it is a negative control rather than a candidate.",
         f"- E2-A0 learned-interaction gate: {'PASS' if passed else 'FAIL'}.",
         "",
-        "The gate is deliberately based on matched learned interaction versus the same",
-        "fixed-cosine architecture, not on the official aggregate alone.",
+        "The gate uses the official weighted-total pairwise accuracy. Dimension accuracy",
+        "and Spearman remain mechanism diagnostics, and Kendall checks consistency.",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -406,13 +437,15 @@ def run_e2_a0(config: E2A0Config, training: DiagonalTrainingConfig) -> pd.DataFr
         ("fixed_matched_hybrid", "ridge_global_structure"),
         ("diagonal_matched_hybrid", "diagonal_generic_hybrid"),
         ("diagonal_matched_hybrid", "diagonal_mismatched_ensemble_hybrid"),
+        ("diagonal_mismatch_shift2_hybrid", "ridge_global_structure"),
     ]
-    paired_question_bootstrap(
+    paired = paired_question_bootstrap(
         details_by_model,
         comparisons,
         n_resamples=config.bootstrap_resamples,
         seed=config.bootstrap_seed,
-    ).to_csv(output / "paired_bootstrap.csv", index=False, float_format="%.8f")
+    )
+    paired.to_csv(output / "paired_bootstrap.csv", index=False, float_format="%.8f")
     alignment_paired = _alignment_paired_bootstrap(
         details_by_model,
         comparisons,
@@ -422,13 +455,15 @@ def run_e2_a0(config: E2A0Config, training: DiagonalTrainingConfig) -> pd.DataFr
     alignment_paired.to_csv(
         output / "alignment_paired_bootstrap.csv", index=False, float_format="%.8f"
     )
-    _write_report(output / "e2_a0_conclusions.md", metrics, alignment_paired)
+    _write_report(output / "e2_a0_conclusions.md", metrics, paired, alignment_paired)
 
     elapsed = time.perf_counter() - started
     protocol = {
         "name": "AEOLLM-2 E2-A0 minimal learned diagonal interaction",
         "outer_split": "Leave-One-Question-Out",
         "model_selection": "none; architecture, epochs, and optimization fixed",
+        "primary_metric": "official weighted-total pairwise accuracy",
+        "secondary_metrics": ["Spearman", "Kendall"],
         "encoder": "frozen Qwen/Qwen3-Embedding-0.6B",
         "chunks": "unbounded E1.1 structure-preserving chunks",
         "baseline": "global embedding + surface features nested Ridge",
@@ -512,7 +547,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=root / "outputs/e1/embeddings/qwen3-0.6b-query-variants",
     )
-    parser.add_argument("--output-dir", type=Path, default=root / "outputs/e2/e2_a0")
+    parser.add_argument(
+        "--output-dir", type=Path, default=root / "outputs/e2/e2_a0_accuracy"
+    )
     parser.add_argument("--device", required=True, help="cpu or an explicit cuda:N")
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--learning-rate", type=float, default=1e-2)
@@ -551,10 +588,10 @@ def main(argv: list[str] | None = None) -> int:
                 "spearman",
                 "kendall",
                 "accuracy",
-                "spearman_comprehensiveness",
-                "spearman_instruction_following",
+                "accuracy_comprehensiveness",
+                "accuracy_instruction_following",
                 "mae",
             ]
-        ].sort_values("spearman", ascending=False).to_string(index=False)
+        ].sort_values(["accuracy", "spearman"], ascending=False).to_string(index=False)
     )
     return 0

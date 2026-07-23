@@ -23,7 +23,8 @@ Use a CPU environment containing `requirements-e0.txt`. On the current Tyan
 workspace, `.venv-system-python-backup` contains these packages:
 
 ```bash
-.venv-system-python-backup/bin/python scripts/run_e0.py
+.venv-system-python-backup/bin/python scripts/run_e0.py \
+  --output-dir outputs/e0_accuracy
 ```
 
 The root `.venv` is intended for model serving and may not contain pandas or
@@ -40,11 +41,14 @@ For a quick smoke run with shorter confidence intervals:
 ## Protocol
 
 - Primary split: Leave-One-Question-Out (10 folds).
-- Inner hyperparameter selection: GroupKFold by question, optimizing MAE.
-- Primary metrics: the exact official Spearman, Kendall, and pairwise Accuracy.
+- Inner hyperparameter selection: GroupKFold by question, maximizing pairwise
+  accuracy, then Spearman, then minimizing MAE.
+- Primary metric: exact official pairwise Accuracy of the weighted total.
+- Secondary metrics: Spearman and Kendall.
 - Spearman/Kendall aggregation: macro mean across questions.
 - Accuracy aggregation: total correct pairs divided by total pairs.
-- Uncertainty unit: question, not document or document pair.
+- Accuracy uncertainty resamples questions and recomputes pooled correct/total
+  pairs; document pairs are not treated as independent.
 - Prediction gate: exactly the 160 labelled keys, unique keys, four finite
   dimension scores per key, and every score in `[0, 10]`.
 
