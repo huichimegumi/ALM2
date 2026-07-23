@@ -257,6 +257,68 @@ class CriterionChunkInteraction(nn.Module):
         return (evidence * self.head_weight[None, :, :]).sum(dim=2) + self.head_bias
 
 
+class DimensionSeparatedCriterionChunkInteraction(nn.Module):
+    """Joint two-head model with one diagonal metric per alignment dimension."""
+
+    def __init__(self, embedding_dimension: int) -> None:
+        super().__init__()
+        self.embedding_dimension = int(embedding_dimension)
+        self.diagonal = nn.Parameter(
+            torch.zeros(len(ALIGNMENT_DIMS), embedding_dimension)
+        )
+        self.head_weight = nn.Parameter(
+            torch.empty(len(ALIGNMENT_DIMS), len(POOL_NAMES))
+        )
+        self.head_bias = nn.Parameter(torch.zeros(len(ALIGNMENT_DIMS)))
+        nn.init.normal_(self.head_weight, mean=0.0, std=0.02)
+
+    def score_pairs(
+        self,
+        criteria: torch.Tensor,
+        chunks: torch.Tensor,
+        dimension_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        cosine = criteria @ chunks.T
+        selected_diagonals = self.diagonal[dimension_indices]
+        diagonal = math.sqrt(self.embedding_dimension) * (
+            (criteria * selected_diagonals) @ chunks.T
+        )
+        return cosine + diagonal
+
+    def evidence(
+        self,
+        chunks: QuestionChunks,
+        rubric: RubricTensor,
+        *,
+        logmeanexp_temperature: float,
+    ) -> torch.Tensor:
+        all_scores = self.score_pairs(
+            rubric.embeddings,
+            chunks.embeddings,
+            rubric.dimension_indices,
+        )
+        documents: list[torch.Tensor] = []
+        for start, end in chunks.spans:
+            pooled = pool_criterion_chunk_scores(
+                all_scores[:, start:end],
+                logmeanexp_temperature=logmeanexp_temperature,
+            )
+            documents.append(
+                aggregate_criterion_evidence(
+                    pooled, rubric.dimension_indices, rubric.weights
+                )
+            )
+        return torch.stack(documents, dim=0)
+
+    def forward_from_evidence(self, evidence: torch.Tensor) -> torch.Tensor:
+        if evidence.ndim != 3 or evidence.shape[1:] != (
+            len(ALIGNMENT_DIMS),
+            len(POOL_NAMES),
+        ):
+            raise ValueError("evidence must have shape [documents, 2, 4]")
+        return (evidence * self.head_weight[None, :, :]).sum(dim=2) + self.head_bias
+
+
 def precompute_fixed_evidence(
     corpus: InteractionCorpus,
     rubric_view: Mapping[int, RubricTensor],
@@ -394,6 +456,146 @@ def train_interaction_fold_ensemble(
                     if model.diagonal is not None
                     else 0.0
                 ),
+                "head_l2_norm": float(
+                    torch.linalg.vector_norm(model.head_weight).detach().cpu()
+                ),
+            }
+        )
+    return np.mean(seed_predictions, axis=0), diagnostics
+
+
+def train_separated_interaction_fold_ensemble(
+    corpus: InteractionCorpus,
+    rubric_view: Mapping[int, RubricTensor],
+    train_questions: Sequence[int],
+    test_question: int,
+    targets_by_question: Mapping[int, np.ndarray],
+    baseline_by_question: Mapping[int, np.ndarray],
+    *,
+    config: DiagonalTrainingConfig,
+    seeds: Sequence[int],
+    learn_diagonal: bool,
+) -> tuple[np.ndarray, list[dict[str, float | int | bool]]]:
+    """Train jointly while replacing only the shared diagonal with two diagonals."""
+    config.validate()
+    if not seeds:
+        raise ValueError("at least one seed is required")
+    device = next(iter(corpus.chunks.values())).embeddings.device
+    train_questions = tuple(sorted(int(value) for value in train_questions))
+    y_train = np.concatenate([targets_by_question[q] for q in train_questions], axis=0)
+    mean = y_train.mean(axis=0, dtype=np.float64).astype(np.float32)
+    scale = y_train.std(axis=0, dtype=np.float64).astype(np.float32)
+    scale = np.where(scale < 1e-6, 1.0, scale).astype(np.float32)
+    target_tensors = {
+        q: torch.as_tensor((targets_by_question[q] - mean) / scale, device=device)
+        for q in train_questions
+    }
+    baseline_tensors = {
+        q: torch.as_tensor((baseline_by_question[q] - mean) / scale, device=device)
+        for q in (*train_questions, int(test_question))
+    }
+    fixed_evidence = (
+        precompute_fixed_evidence(
+            corpus, rubric_view, temperature=config.logmeanexp_temperature
+        )
+        if not learn_diagonal
+        else None
+    )
+    seed_predictions: list[np.ndarray] = []
+    diagnostics: list[dict[str, float | int | bool]] = []
+    for seed in seeds:
+        torch.manual_seed(int(seed))
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(int(seed))
+        np.random.seed(int(seed))
+        model: CriterionChunkInteraction | DimensionSeparatedCriterionChunkInteraction
+        if learn_diagonal:
+            model = DimensionSeparatedCriterionChunkInteraction(
+                corpus.embedding_dimension
+            ).to(device)
+        else:
+            model = CriterionChunkInteraction(
+                corpus.embedding_dimension, learn_diagonal=False
+            ).to(device)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+        )
+        final_huber = float("nan")
+        final_regularization = float("nan")
+        model.train()
+        for _ in range(config.epochs):
+            optimizer.zero_grad(set_to_none=True)
+            predictions: list[torch.Tensor] = []
+            targets: list[torch.Tensor] = []
+            for question_id in train_questions:
+                evidence = (
+                    fixed_evidence[question_id]
+                    if fixed_evidence is not None
+                    else model.evidence(
+                        corpus.chunks[question_id],
+                        rubric_view[question_id],
+                        logmeanexp_temperature=config.logmeanexp_temperature,
+                    )
+                )
+                correction = model.forward_from_evidence(evidence)
+                predictions.append(baseline_tensors[question_id] + correction)
+                targets.append(target_tensors[question_id])
+            prediction = torch.cat(predictions, dim=0)
+            target = torch.cat(targets, dim=0)
+            huber = functional.smooth_l1_loss(
+                prediction, target, beta=config.huber_beta, reduction="mean"
+            )
+            regularization = (
+                config.diagonal_l2 * model.diagonal.square().mean()
+                if learn_diagonal
+                else torch.zeros((), device=device)
+            )
+            loss = huber + regularization
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
+            optimizer.step()
+            final_huber = float(huber.detach().cpu())
+            final_regularization = float(regularization.detach().cpu())
+        model.eval()
+        with torch.inference_mode():
+            evidence = (
+                fixed_evidence[int(test_question)]
+                if fixed_evidence is not None
+                else model.evidence(
+                    corpus.chunks[int(test_question)],
+                    rubric_view[int(test_question)],
+                    logmeanexp_temperature=config.logmeanexp_temperature,
+                )
+            )
+            standardized = baseline_tensors[int(test_question)] + model.forward_from_evidence(
+                evidence
+            )
+            prediction = standardized.cpu().numpy() * scale + mean
+        seed_predictions.append(prediction)
+        diagonal_norms = (
+            torch.linalg.vector_norm(model.diagonal, dim=1).detach().cpu().tolist()
+            if learn_diagonal
+            else [0.0] * len(ALIGNMENT_DIMS)
+        )
+        diagnostics.append(
+            {
+                "seed": int(seed),
+                "learn_diagonal": bool(learn_diagonal),
+                "train_documents": int(
+                    sum(len(corpus.chunks[q].document_ids) for q in train_questions)
+                ),
+                "test_documents": int(
+                    len(corpus.chunks[int(test_question)].document_ids)
+                ),
+                "trainable_parameters": int(
+                    sum(parameter.numel() for parameter in model.parameters())
+                ),
+                "final_huber": final_huber,
+                "final_diagonal_regularization": final_regularization,
+                "diagonal_l2_norm_comprehensiveness": float(diagonal_norms[0]),
+                "diagonal_l2_norm_instruction_following": float(diagonal_norms[1]),
                 "head_l2_norm": float(
                     torch.linalg.vector_norm(model.head_weight).detach().cpu()
                 ),

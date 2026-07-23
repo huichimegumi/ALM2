@@ -7,6 +7,7 @@ import torch
 from aeollm_e1.diagonal_interaction import (
     CriterionChunkInteraction,
     DiagonalTrainingConfig,
+    DimensionSeparatedCriterionChunkInteraction,
     InteractionCorpus,
     QuestionChunks,
     RubricTensor,
@@ -14,6 +15,7 @@ from aeollm_e1.diagonal_interaction import (
     cyclic_rubric_maps,
     pool_criterion_chunk_scores,
     train_interaction_fold_ensemble,
+    train_separated_interaction_fold_ensemble,
 )
 
 
@@ -46,6 +48,20 @@ def test_pooling_and_official_weight_aggregation_are_deterministic() -> None:
     assert aggregated.shape == (2, 4)
     assert torch.allclose(aggregated[0], (pooled[0] + 3 * pooled[1]) / 4)
     assert torch.allclose(aggregated[1], pooled[2])
+
+
+def test_joint_separated_model_uses_dimension_specific_diagonals() -> None:
+    criteria = _unit([[1, 0, 0], [1, 0, 0]])
+    chunks = _unit([[1, 0, 0], [0, 1, 0]])
+    dimensions = torch.tensor([0, 1])
+    model = DimensionSeparatedCriterionChunkInteraction(3)
+    fixed = criteria @ chunks.T
+    assert torch.allclose(model.score_pairs(criteria, chunks, dimensions), fixed)
+    with torch.no_grad():
+        model.diagonal[0, 0] = 1.0
+    scores = model.score_pairs(criteria, chunks, dimensions)
+    assert scores[0, 0] > fixed[0, 0]
+    assert torch.equal(scores[1], fixed[1])
 
 
 def _tiny_corpus() -> InteractionCorpus:
@@ -107,6 +123,56 @@ def test_tiny_fold_training_returns_only_held_out_documents() -> None:
     )
     assert fixed_prediction.shape == (2, 2)
     assert fixed_diagnostics[0]["trainable_parameters"] == 10
+
+
+def test_joint_separated_training_preserves_two_head_output() -> None:
+    corpus = _tiny_corpus()
+    targets = {
+        1: np.asarray([[2.0, 3.0], [4.0, 5.0]], dtype=np.float32),
+        2: np.asarray([[3.0, 4.0], [5.0, 6.0]], dtype=np.float32),
+    }
+    baseline = {
+        1: np.asarray([[2.5, 3.5], [3.5, 4.5]], dtype=np.float32),
+        2: np.asarray([[3.5, 4.5], [4.5, 5.5]], dtype=np.float32),
+    }
+    prediction, diagnostics = train_separated_interaction_fold_ensemble(
+        corpus,
+        corpus.rubric_views["matched"],
+        train_questions=(1,),
+        test_question=2,
+        targets_by_question=targets,
+        baseline_by_question=baseline,
+        config=DiagonalTrainingConfig(epochs=2),
+        seeds=(7,),
+        learn_diagonal=True,
+    )
+    assert prediction.shape == (2, 2)
+    assert diagnostics[0]["trainable_parameters"] == 16
+    assert "diagonal_l2_norm_comprehensiveness" in diagnostics[0]
+    assert "diagonal_l2_norm_instruction_following" in diagnostics[0]
+    separated_fixed, _ = train_separated_interaction_fold_ensemble(
+        corpus,
+        corpus.rubric_views["matched"],
+        train_questions=(1,),
+        test_question=2,
+        targets_by_question=targets,
+        baseline_by_question=baseline,
+        config=DiagonalTrainingConfig(epochs=2),
+        seeds=(7,),
+        learn_diagonal=False,
+    )
+    original_fixed, _ = train_interaction_fold_ensemble(
+        corpus,
+        corpus.rubric_views["matched"],
+        train_questions=(1,),
+        test_question=2,
+        targets_by_question=targets,
+        baseline_by_question=baseline,
+        config=DiagonalTrainingConfig(epochs=2),
+        seeds=(7,),
+        learn_diagonal=False,
+    )
+    assert np.array_equal(separated_fixed, original_fixed)
 
 
 def test_cyclic_rubric_maps_never_self_match() -> None:
