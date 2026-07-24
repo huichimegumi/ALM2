@@ -26,12 +26,6 @@ from aeollm_e1.e2_a01_pipeline import (  # noqa: E402
 
 RESAMPLES = 5000
 SEED = 20260721
-RETROSPECTIVE_NOTE = (
-    "> **Accuracy-first retrospective.** Saved predictions are unchanged and were "
-    "produced under the historical protocol. Where historical inner selection used "
-    "MAE or analysis emphasized Spearman, this report reinterprets the fixed "
-    "out-of-fold predictions; it is not fresh confirmatory evidence.\n\n"
-)
 
 
 def _details(directory: Path) -> dict[str, pd.DataFrame]:
@@ -68,18 +62,6 @@ def _refresh_statistics(
     return metrics, details, comparisons, paired
 
 
-def _mark_retrospective(path: Path) -> None:
-    text = path.read_text(encoding="utf-8")
-    first_break = text.find("\n\n")
-    if first_break < 0:
-        path.write_text(text + "\n\n" + RETROSPECTIVE_NOTE, encoding="utf-8")
-    else:
-        path.write_text(
-            text[: first_break + 2] + RETROSPECTIVE_NOTE + text[first_break + 2 :],
-            encoding="utf-8",
-        )
-
-
 def _refresh_simple(
     relative: str,
     report_name: str,
@@ -89,11 +71,10 @@ def _refresh_simple(
     metrics, _, _, paired = _refresh_statistics(directory)
     report = directory / report_name
     writer(report, metrics, paired)
-    _mark_retrospective(report)
 
 
 def main() -> int:
-    e0 = ROOT / "outputs/e0"
+    e0 = ROOT / "outputs/e0_accuracy"
     metrics, _, _, paired = _refresh_statistics(
         e0,
         (
@@ -103,12 +84,15 @@ def main() -> int:
     )
     report = e0 / "e0_conclusions.md"
     _write_summary_report(report, metrics, paired, [])
-    _mark_retrospective(report)
 
-    _refresh_simple("outputs/e1/e1_4", "e1_4_conclusions.md", write_e14_report)
-    _refresh_simple("outputs/e1/e1_5", "e1_5_conclusions.md", write_e15_report)
+    _refresh_simple(
+        "outputs/e1/e1_4_accuracy", "e1_4_conclusions.md", write_e14_report
+    )
+    _refresh_simple(
+        "outputs/e1/e1_5_accuracy", "e1_5_conclusions.md", write_e15_report
+    )
 
-    e16 = ROOT / "outputs/e1/e1_6"
+    e16 = ROOT / "outputs/e1/e1_6_accuracy"
     metrics, details, comparisons, paired = _refresh_statistics(
         e16,
         (
@@ -124,9 +108,8 @@ def main() -> int:
     )
     report = e16 / "e1_6_conclusions.md"
     write_e16_report(report, metrics, paired, alignment)
-    _mark_retrospective(report)
 
-    e17 = ROOT / "outputs/e1/e1_7"
+    e17 = ROOT / "outputs/e1/e1_7_accuracy"
     metrics, details, comparisons, paired = _refresh_statistics(e17)
     alignment = _alignment_paired_bootstrap(
         details, comparisons, n_resamples=RESAMPLES, seed=SEED
@@ -137,9 +120,8 @@ def main() -> int:
     selections = pd.read_csv(e17 / "selected_query_and_hyperparameters.csv")
     report = e17 / "e1_7_conclusions.md"
     write_e17_report(report, metrics, paired, alignment, selections)
-    _mark_retrospective(report)
 
-    e2a0 = ROOT / "outputs/e2/e2_a0"
+    e2a0 = ROOT / "outputs/e2/e2_a0_accuracy"
     metrics, details, comparisons, paired = _refresh_statistics(
         e2a0,
         (("diagonal_mismatch_shift2_hybrid", "ridge_global_structure"),),
@@ -152,9 +134,8 @@ def main() -> int:
     )
     report = e2a0 / "e2_a0_conclusions.md"
     write_e2a0_report(report, metrics, paired, alignment)
-    _mark_retrospective(report)
 
-    e2a01 = ROOT / "outputs/e2/e2_a01"
+    e2a01 = ROOT / "outputs/e2/e2_a01_accuracy"
     metrics, details, comparisons, paired = _refresh_statistics(e2a01)
     dimension_paired = _alignment_paired_bootstrap(
         details, comparisons, n_resamples=RESAMPLES, seed=SEED
@@ -174,15 +155,14 @@ def main() -> int:
         gates,
         diagnostics,
         shared_loaded="diagonal_shared_a0_hybrid" in details,
-        controls_run=[],
+        controls_run=gates.loc[gates["passed"], "dimension"].astype(str).tolist(),
     )
-    _mark_retrospective(report)
 
     summary_rows = []
     for experiment, path in (
         ("E0", e0),
-        ("E1.4", ROOT / "outputs/e1/e1_4"),
-        ("E1.5", ROOT / "outputs/e1/e1_5"),
+        ("E1.4", ROOT / "outputs/e1/e1_4_accuracy"),
+        ("E1.5", ROOT / "outputs/e1/e1_5_accuracy"),
         ("E1.6", e16),
         ("E1.7", e17),
         ("E2-A0", e2a0),
@@ -205,11 +185,10 @@ def main() -> int:
             }
         )
     summary = pd.DataFrame(summary_rows)
-    (ROOT / "outputs/accuracy_first_retrospective.md").write_text(
-        "# Accuracy-first retrospective summary\n\n"
-        + RETROSPECTIVE_NOTE
+    (ROOT / "outputs/accuracy_first_summary.md").write_text(
+        "# Accuracy-first experiment summary\n\n"
         + summary.to_markdown(index=False, floatfmt=".4f")
-        + "\n\nSee `docs/ACCURACY_FIRST_PROTOCOL.md` for the prospective protocol.\n",
+        + "\n\nSee `docs/ACCURACY_FIRST_PROTOCOL.md` for the evaluation protocol.\n",
         encoding="utf-8",
     )
     print(summary.to_string(index=False))

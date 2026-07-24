@@ -56,6 +56,12 @@ The official evaluator is intentionally kept as the metric definition. The E0
 validator is stricter because the official script silently inner-joins missing
 documents, accepts partial dimensions, and evaluates partial question sets.
 
+The current accuracy-first run is stored separately from the historical
+MAE-selected run. `outputs/e0_accuracy/` is the current result directory;
+`outputs/e0/` is retained only as a historical artifact. Both runs use the same
+deterministic surface-feature table, so downstream E1/E2 feature inputs are
+unchanged.
+
 ## Models and diagnostics
 
 - `mean_loqo`: training-question mean for each dimension.
@@ -73,7 +79,7 @@ documents, accepts partial dimensions, and evaluates partial question sets.
 
 ## Outputs
 
-The default output directory is `outputs/e0/`:
+The default output directory is `outputs/e0_accuracy/`:
 
 ```text
 protocol.yaml

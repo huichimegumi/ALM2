@@ -238,6 +238,8 @@ def _write_summary_report(
         "",
         "All learned results are out-of-fold. The primary protocol is leave-one-question-out;",
         "`random_split_surface_ridge` is a deliberately leaky diagnostic and is not a valid final result.",
+        "Inside each outer training split, grouped validation selects hyperparameters by",
+        "pairwise accuracy, then Spearman, then MAE as deterministic tie-breakers.",
         "",
         f"Integrity gate: {'PASS' if not integrity_errors else 'FAIL'} ({len(integrity_errors)} errors).",
         "",

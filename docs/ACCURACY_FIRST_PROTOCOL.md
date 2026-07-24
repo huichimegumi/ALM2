@@ -32,11 +32,17 @@ representations are ordered lexicographically:
 Outer held-out questions remain unavailable to preprocessing, selection,
 fitting, and early stopping.
 
-## Retrospective status
+## Historical and current runs
 
 E0 through E2-A0.1 were originally designed or selected after inspecting
 Spearman and, for Ridge models, often used inner MAE. Their saved predictions
-are retained unchanged. Accuracy-first reinterpretation of those predictions is
-exploratory and must not be described as fresh confirmatory evidence. Running
-the updated pipelines creates a new accuracy-selected experiment and should use
-a new output directory rather than overwrite historical predictions.
+are retained unchanged in the original output directories. Accuracy-first
+reinterpretation of those historical predictions is exploratory and must not be
+described as fresh confirmatory evidence.
+
+All stages from E0 through E2-A0.1 have now also been run under the updated
+accuracy-first code in separate `*_accuracy` output directories. These current
+runs select grouped hyperparameters by pairwise accuracy where selection is
+applicable. Fixed-training experiments retain their declared losses and
+hyperparameters; changing the primary evaluation metric does not imply that
+every optimization loss became a pairwise loss.
