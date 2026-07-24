@@ -1,0 +1,16 @@
+model,metric,estimate,ci_low,ci_high,n_questions,n_resamples
+global_structure,accuracy,0.69083333,0.63414583,0.74833333,10,5000
+global_structure,spearman,0.52264706,0.38029412,0.65353676,10,5000
+global_structure,kendall,0.38166667,0.26829167,0.49666667,10,5000
+matched_full_selective,accuracy,0.70666667,0.64997917,0.75916667,10,5000
+matched_full_selective,spearman,0.56147059,0.42352941,0.67588235,10,5000
+matched_full_selective,kendall,0.41333333,0.29995833,0.51833333,10,5000
+criterion_only_selective,accuracy,0.70250000,0.64833333,0.75583333,10,5000
+criterion_only_selective,spearman,0.56000000,0.42852941,0.67705882,10,5000
+criterion_only_selective,kendall,0.40500000,0.29666667,0.51166667,10,5000
+fixed_dimension_selective,accuracy,0.70166667,0.64416667,0.75500000,10,5000
+fixed_dimension_selective,spearman,0.55558824,0.41380882,0.67471324,10,5000
+fixed_dimension_selective,kendall,0.40333333,0.28833333,0.51000000,10,5000
+nested_query_selective,accuracy,0.70416667,0.64500000,0.75750000,10,5000
+nested_query_selective,spearman,0.55911765,0.41263971,0.67825000,10,5000
+nested_query_selective,kendall,0.40833333,0.29000000,0.51500000,10,5000

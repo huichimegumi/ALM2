@@ -1,0 +1,21 @@
+{
+  "status": "complete",
+  "models": 11,
+  "documents": 160,
+  "questions": 10,
+  "elapsed_seconds": 4141.8878867812455,
+  "device": "cuda:5",
+  "gpu_used": true,
+  "passing_dimensions": [
+    "instruction_following"
+  ],
+  "conditional_control_models": [
+    "diagonal_generic_separate_hybrid",
+    "diagonal_mismatch_shift1_separate_hybrid",
+    "diagonal_mismatch_shift2_separate_hybrid",
+    "diagonal_mismatch_shift3_separate_hybrid",
+    "diagonal_mismatch_shift4_separate_hybrid",
+    "diagonal_mismatch_shift5_separate_hybrid",
+    "diagonal_mismatched_ensemble_separate_hybrid"
+  ]
+}

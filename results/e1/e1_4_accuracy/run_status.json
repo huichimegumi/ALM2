@@ -1,0 +1,7 @@
+{
+  "status": "complete",
+  "models": 10,
+  "documents": 160,
+  "questions": 10,
+  "gpu_used": false
+}

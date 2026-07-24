@@ -1,0 +1,8 @@
+{
+  "status": "complete",
+  "models": 27,
+  "documents": 160,
+  "questions": 10,
+  "mismatch_controls": 5,
+  "gpu_used": false
+}

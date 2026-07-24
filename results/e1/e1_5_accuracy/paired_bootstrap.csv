@@ -1,0 +1,16 @@
+candidate,reference,metric,mean_delta,ci_low,ci_high,probability_delta_gt_zero,positive_questions,tied_questions,net_correct_pairs,n_questions
+mlp_structure_huber_pair,mlp_structure_huber,accuracy,0.01333333,-0.00083333,0.02666667,0.96240000,6,3,16.00000000,10
+mlp_structure_huber_pair,mlp_structure_huber,spearman,0.02588235,-0.01029412,0.05911765,0.91740000,7,0,,10
+mlp_structure_huber_pair,mlp_structure_huber,kendall,0.02666667,-0.00166667,0.05333333,0.97300000,6,3,,10
+mlp_rubric_huber_pair,mlp_rubric_huber,accuracy,0.00833333,-0.00750000,0.03333333,0.70520000,3,5,10.00000000,10
+mlp_rubric_huber_pair,mlp_rubric_huber,spearman,0.01441176,-0.02382353,0.07088971,0.67340000,4,1,,10
+mlp_rubric_huber_pair,mlp_rubric_huber,kendall,0.01666667,-0.01500000,0.06500000,0.71380000,3,5,,10
+mlp_all_huber_pair,mlp_all_huber,accuracy,0.00500000,-0.00333333,0.01416667,0.84680000,4,3,6.00000000,10
+mlp_all_huber_pair,mlp_all_huber,spearman,0.01352941,-0.01147059,0.03441176,0.86880000,6,1,,10
+mlp_all_huber_pair,mlp_all_huber,kendall,0.01000000,-0.00666667,0.02833333,0.88860000,4,3,,10
+mlp_all_huber,ridge_all_unbounded,accuracy,-0.02666667,-0.05250000,-0.00416667,0.00840000,2,0,-32.00000000,10
+mlp_all_huber,ridge_all_unbounded,spearman,-0.08058824,-0.14617647,-0.03088235,0.00000000,1,0,,10
+mlp_all_huber,ridge_all_unbounded,kendall,-0.05333333,-0.10333333,-0.00833333,0.00780000,2,0,,10
+mlp_all_huber_pair,ridge_all_unbounded,accuracy,-0.02166667,-0.04416667,-0.00083333,0.02120000,3,1,-26.00000000,10
+mlp_all_huber_pair,ridge_all_unbounded,spearman,-0.06705882,-0.12236765,-0.01529412,0.00420000,3,0,,10
+mlp_all_huber_pair,ridge_all_unbounded,kendall,-0.04333333,-0.08833333,-0.00166667,0.02160000,3,1,,10

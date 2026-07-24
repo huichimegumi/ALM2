@@ -1,0 +1,9 @@
+{
+  "status": "complete",
+  "models": 10,
+  "documents": 160,
+  "questions": 10,
+  "elapsed_seconds": 4696.151100957766,
+  "device": "cuda:2",
+  "gpu_used": true
+}

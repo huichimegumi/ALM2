@@ -1,0 +1,3 @@
+dimension,learned_minus_fixed_accuracy,learned_fixed_ci_low,learned_fixed_ci_high,probability_delta_gt_zero,positive_questions,finite_questions,learned_minus_baseline_accuracy,passed
+comprehensiveness,-0.01500000,-0.03000000,-0.00083333,0.02080000,2,10,-0.01583333,False
+instruction_following,0.08000000,-0.00835417,0.21083333,0.90100000,3,10,0.08166667,True

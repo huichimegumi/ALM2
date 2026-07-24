@@ -1,0 +1,16 @@
+{
+  "status": "complete",
+  "integrity_errors": [],
+  "models_evaluated": [
+    "mean_loqo",
+    "metadata_ridge_loqo",
+    "odat_affine_loqo",
+    "odat_isotonic_loqo",
+    "odat_multioutput_ridge_loqo",
+    "odat_raw",
+    "random_split_surface_ridge",
+    "surface_metadata_ridge_loqo",
+    "surface_ridge_loqo"
+  ],
+  "gpu_used": false
+}
